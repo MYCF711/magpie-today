@@ -32,8 +32,10 @@ msgs.push({ role: "user", content: "TIMEOUT 的值是多少？只回答数字。
 r = await chat({ model: M, stream: false, messages: msgs, tools })
 check("第三轮记得上文", (r.j.choices[0].message.content ?? "").includes("30"), `${r.ms}ms`)
 
+// 分流默认关闭（主人要求默认走工具）⇒ web_fetch 应该走 tool_calls，不该自己做完
 r = await chat({ model: M, stream: false, messages: [{ role: "user", content: "用 web_fetch 打开 https://example.com 并贴出正文。" }], tools })
-check("web_fetch 分流给 Today 自己做", !r.j.choices[0].message.tool_calls, `${r.ms}ms`)
+const wfCalls = r.j.choices[0].message.tool_calls ?? []
+check("默认走工具：web_fetch 出 tool_calls", wfCalls.some(t => t.function.name === "web_fetch"), `${r.ms}ms ${wfCalls.map(t=>t.function.name).join(",")}`)
 
 r = await chat({ model: M, stream: false, stop: ["5"], messages: [{ role: "user", content: "数到 10，只输出数字空格分隔" }] })
 check("stop 截断", r.j.choices[0].message.content.trim() === "1 2 3 4", JSON.stringify(r.j.choices[0].message.content))
