@@ -30,6 +30,8 @@
 //
 // ═══════════════════════════════════════════════════════════════════════
 
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
 import { startSelfRegister } from "./src/self-register.mjs"
 import { ICON_DATA_URI } from "./src/icon.mjs"
 import {
@@ -83,6 +85,45 @@ function deviceIdFor(auth) {
   return deviceIdCache
 }
 
+/**
+ * 清空 Today 侧人设（服务端系统提示词）。
+ *
+ * 为什么值得做：`agentCharacter` 里写着「回复中不要使用 markdown 格式」这类格式约束，
+ * 当作模型用时会和调用方的系统提示词打架。实测 `PATCH /v1/agents/default` 能置空，
+ * 回读长度为 0。**只动 agentCharacter 与 aboutMe，不动 userFacts**（那是记忆）。
+ *
+ * 备份写在 magpie 的配置目录里，`tools/agent-persona.mjs --restore` 也认这一份。
+ */
+async function stripPersona(api, backupDir) {
+  const me = await api.request("/v1/agents/me", { timeout: 20_000 })
+  if (!me.ok) return { changed: false }
+  const cur = me.json ?? {}
+  if ((cur.agentCharacter ?? "") === "" && (cur.aboutMe ?? "") === "") {
+    return { changed: false, backup: null, reason: "已经是空的" }
+  }
+  const file = join(backupDir ?? process.cwd(), ".agent-persona-backup.json")
+  try {
+    writeFileSync(
+      file,
+      JSON.stringify(
+        { agentName: cur.agentName, aboutMe: cur.aboutMe, agentCharacter: cur.agentCharacter, savedAt: new Date().toISOString() },
+        null,
+        2,
+      ),
+      "utf8",
+    )
+  } catch {
+    // 备份写不进去就别改账号 —— 不能做一件还原不了的事
+    return { changed: false, backup: null, reason: "备份写不进去，已跳过" }
+  }
+  const r = await api.request("/v1/agents/default", {
+    method: "PATCH",
+    body: { agentCharacter: "", aboutMe: "" },
+    timeout: 20_000,
+  })
+  return { changed: r.ok, backup: r.ok ? file : null }
+}
+
 function clampPercent(n) {
   if (!Number.isFinite(n)) return 0
   return Math.max(0, Math.min(200, Math.round(n * 10) / 10))
@@ -132,13 +173,28 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
         {
           type: "oauth",
           label: `从本机 ${PROVIDER_NAME} 桌面端导入`,
+          prompts: [
+            {
+              type: "select",
+              key: "persona",
+              message: `${PROVIDER_NAME} 侧的人设（服务端系统提示词）怎么处理？`,
+              options: [
+                {
+                  label: "清空（推荐）",
+                  value: "strip",
+                  hint: "把 agentCharacter/aboutMe 置空，让调用方的系统提示词独占；账号级改动，可还原",
+                },
+                { label: "保留", value: "keep", hint: "不动你的 Today 账号" },
+              ],
+            },
+          ],
           /**
            * ⚠ authorize 必须立刻返回：真正的活儿在 callback 里。
            *   在这里 await 用户（或发一次慢请求）会和 magpie 双向死锁
            *   —— 它开着登录窗口等你的 url，你等它的网络回来。
            * 读盘是毫秒级的，但校验要发请求，所以校验也放进 callback。
            */
-          authorize: async () => {
+          authorize: async (inputs) => {
             const cred = readDesktopCredential()
             if (!cred) {
               return {
@@ -176,6 +232,11 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                   try {
                     me = await probe.json()
                   } catch {}
+                  // 人设剥离：账号级改动，只在用户选了「清空」时做，且先把原值备份下来
+                  if (String(inputs?.persona ?? "") === "strip") {
+                    const r = await stripPersona(api, directory)
+                    if (r.changed) log(`已清空 ${PROVIDER_NAME} 侧人设（备份在 ${r.backup}）`)
+                  }
                   return {
                     type: "success",
                     access: accessToken,

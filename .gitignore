@@ -4,3 +4,4 @@ _capture/
 _asar/
 dist/
 *.tgz
+.agent-persona-backup.json

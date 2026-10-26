@@ -212,3 +212,131 @@ agent 用的是服务端自己那套工具（客户端在 `PUT /registry/devices
   用户会看到「读不到登录态」的提示，那时应该走「粘贴 session token」。
 - **封号风险**：本插件走的是桌面端自己的接口与设备身份，没有伪造签名（因为压根没有签名）。
   但「用脚本代替客户端发消息」这件事本身在不在厂商的风控口径内，无法从技术上判断。
+
+---
+
+## 九、工具：为什么不能透传，以及「桥接」这个念头为什么走不通
+
+三个想法都试过了，结论如下。
+
+### 9.1 把 DSH 的 `tools` 透传到 wire —— 不行
+
+`POST /v1/messages` 的两种 body schema（legacy 与 canonical）里**都没有 `tools` 字段**。
+实测更直接：同一句话，带 `tools` 与不带，响应一字不差（都是 `好的`，`parts=1`）。
+
+> 带 `tools` 的请求返回 202 且正常出答案 ⇒ **字段被静默丢弃**。
+> 「没报错」在这里不等于「被采纳」。
+
+### 9.2 「改它的工具名，桥接到 DSH」—— 它的工具是服务端固定的，改不了
+
+问模型「你现在能直接调用哪些工具」，它吐出来的是服务端给的那套（2026-10-26）：
+
+```
+WebFetch / WebSearch / ConnectorStatus / time_calendar / time_zone / time_holiday /
+time_lunar / Memory / UpdateBriefContentPreference / AgentList / SendMessageToAgent /
+StopAgent / ImageView / AskUserQuestion / FileSend / Agent / TodayCopy /
+user_mcp_discovery / ManageAutomation
+```
+
+这 19 个名字由服务端定义，客户端**没有**注册、改名或新增的接口。
+
+客户端侧另有一套东西，别和上面混：设备能力（53 个 `capabilityId`，如 `fs.read`、`fs.grep`、
+`script.shell`、`ghost.*`），通过 `PUT /registry/devices/<设备id>/tool-state` 上报，
+但那个接口**只能按 capabilityId 开关 `enabled`**，不能新增、不能改名，
+且 catalogVersion 是固定的 `sha256:8d99ad1f…` 哈希。
+
+⇒ 所以「换个名字让它认」这条路不存在：它的世界里只有那 19 个+53 个固定名字，
+DSH 的 `read_file` / `run_shell` 不在其中，改也改不出来。
+
+### 9.3 「让它真的调工具」—— 通道存在，但它不一定走那条路
+
+设备工具调用确实有一条真通道（`packages/socket` 里实现完整）：
+
+```
+服务端 → 客户端  { type: "invocation.request", invocationId, capabilityId, args }
+客户端 → 服务端  { type: "invocation.ack", invocationId }
+                { type: "invocation.result", invocationId, result }
+                { type: "invocation.progress", invocationId, progress }
+                { type: "invocation.cancel", … }
+```
+
+实测（注册一台测试设备、上报 `fs.read` 等能力、连上 `/ws`、然后让它读一个真实文件）：
+
+- WS 连上了，`cloud.hello_ack` / `event.push` 都正常收到；
+- 但它**没有**走 `invocation.request`，而是把这件事派成了一个**服务端任务**：
+  `task.started { name: "读取 package.json 的 name 字段", taskType: "background" }`，
+  另起了一个 thread；
+- 我这里一帧 `invocation.request` 都没收到，最终回复是空串（它在等那个任务）。
+
+⇒ 用户侧「设备能力」是它的一条可用通道，但**由它自己决定用不用**，
+不能让调用方要求它「用某个工具」。把它当工具总线用是不可靠的。
+
+（顺带一个观察：这也解释了为什么直接问它「读某个本地文件」会超时 —— 它去开任务了，
+没人回答，它就等着。所以插件侧对这类请求的超时要有兜底。）
+
+### 9.4 结论：工具只能走文本协议（已实现）
+
+`toolProtocol()` 那套是唯一可靠的路子，理由见第六节。
+它的定位要说清楚：**它不是「让 Today 调工具」，而是「让 Today 输出一个可解析的意图，
+由调用方（DSH）自己执行」**。执行权留在调用方手里 —— 这恰好是 DSH 需要的语义。
+
+---
+
+## 十、系统提示词剥离（清空 Today 侧人设）
+
+Today 的 agent 每轮都会被前置一段**服务端人设**（`GET /v1/agents/me`）：
+
+| 字段 | 实测长度 | 是什么 |
+|---|---|---|
+| `agentCharacter` | 276 字符 | 人设与**格式约束**，其中明写「回复中不要使用 markdown 格式」「默认不使用 emoji」 |
+| `aboutMe` | 31 字符 | 一句话自我介绍 |
+| `userFacts` | 1231 字符 | agent 攒下来的关于你的记忆 |
+| `agentName` | `ToBot` | 名字 |
+
+**这段是用户可改的账号状态**：`PATCH /v1/agents/default` 接受 `{agentCharacter, aboutMe, userFacts, character}`，
+实测把前两个置空后回读长度为 0，200。
+
+- 插件在登录时问一句「人设怎么处理」，选「清空」才动，并且**先备份再改**
+  （备份写在 magpie 配置目录的 `.agent-persona-backup.json`）；
+- 备份写不进去就**不改** —— 不做还原不了的事；
+- `tools/agent-persona.mjs --show|--strip|--restore` 可随时手动来回切；
+- **不动 `userFacts`**：那是记忆，清掉是另一件事，也没有需求。
+
+⚠ 这是账号级状态：清空之后你自己 Today 桌面端里的助手人设也会变（名字不变）。
+
+---
+
+## 十一、速度：实测数字与口径
+
+同一句提示「只回复两个字：好的」，各 3~4 次，取中位。2026-10-26，本机，Windows。
+
+| 路径 | 中位 | 口径 |
+|---|---|---|
+| 插件 fetch 直连（不经网关） | **3.27s** | 轮询间隔 250ms 时 |
+| 经 magpie 网关 end-to-end | **3.49s** | 同上 |
+| 流式首字 TTFT | **3.40s** | 同上 |
+| agent 通道地板（自己投递 + 200ms 轮询，不经插件） | **3.31s** | 这是**这条通道**的下限 |
+| 原生 OpenAI 兼容 provider（同机 magpie 直连上游：`officeace/deepseek-v4.1-flash`） | **1.30s** | 作为「直连 API」的对照 |
+
+怎么读这三个数：
+
+- **插件的翻译层几乎不花钱**：3.27~3.49s 对 3.31s 的地板，差在网关包装与轮询粒度上，
+  量级是 0.1~0.2s。
+- **慢的那 2 秒不是插件的开销，是 Today 的 agent 自己**：它每轮要起一个 agent turn，
+  还可能（像 9.3 那样）把请求派成服务端任务。这个开销在**直连 Today 的 API** 时同样存在，
+  桌面端也一样 —— 它不是插件引入的。
+- 也就是说：**「不如原生 API」是真的，但原因不是反代**，而是 Today 卖的本来就不是裸模型，
+  是一个 agent。拿它和 `officeace/deepseek-v4.1-flash` 那种直连模型比，比的是两种东西。
+
+轮询间隔的影响（同一台机、同一句提示）：
+
+| 轮询间隔 | 插件 fetch 中位 | TTFT 中位 |
+|---|---|---|
+| 700ms（初版） | 4.42s（样本方差大：3.17~6.80） | 4.45s |
+| 250ms（现行） | 3.27s | 3.40s |
+
+⇒ 粒度从 700ms 收到 250ms，首字与整体都省了约 1 秒。再往下收收益递减（通道本身的
+结算节奏是秒级），代价是 4 倍的读请求量。
+
+**另一个大概率被问到的问题**：并发。Today 的 agent 侧对并发没有公开口径，
+插件 `maxConcurrency: 2` 是照模板给的保守值，**未实测**。

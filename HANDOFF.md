@@ -1,6 +1,6 @@
 # magpie-today-plugin · 当前状态
 
-> 更新于 2026-10-26 15:26
+> 更新于 2026-10-26 15:45
 
 ## 用户原话
 > 参考之前的反代项目经验，freebuff的cli，jet hub。反代这个软件的模型，要求你完全遵从模板仓库做magpie的插件，我已经登录了一个号，你可以获取这个号的本地凭证
@@ -24,6 +24,24 @@
 - **在用户的 magpie 路由里没有 group**：`providers.json` 的 `groups` 是用户自己管的（`noAutoGroups: true`）。
   直连模型 id 能路由，但要让 DSH 之类的 agent 用上，需要在 DSH 的 provider 配置（或 magpie 的组）里加一条。
 - **未验证项**列在 `docs/internals.md` 第八节（输出上限、并发、长会话、Linux safeStorage、风控口径）。
+
+## 15:45 追加（主人提的三件事）
+
+**① 速度**：实测进 `docs/internals.md` 第十一节。摘要 —— 插件 fetch 中位 **3.27s**、
+经网关 **3.49s**、TTFT **3.40s**、agent 通道地板 **3.31s**、原生直连对照 **1.30s**。
+⇒ 翻译层只花 0.1~0.2s；慢的 ~2s 是 Today 的 agent turn，直连它的 API 也一样。
+轮询 700ms→250ms 省了约 1 秒。
+
+**② 工具**：三个想法都试了，全记录在 `docs/internals.md` 第九节。
+- `tools` 透传到 wire：**不行**（schema 无字段；带与不带响应一字不差）。
+- 改工具名桥接：**不行**（它的 19 个工具名由服务端定义，53 个设备能力只能开关不能新增改名）。
+- 真·invocation 通道（`invocation.request`/`result` over WS）：存在，但实测它把「读文件」
+  派成了服务端 background task，一帧 invocation 都没发给我的测试设备 —— 由它决定用不用，不可控。
+- ⇒ 结论不变：只有文本协议这一条路（已实现），执行权留在调用方。
+
+**③ 系统提示词剥离**：做完了。`PATCH /v1/agents/default` 可置空 `agentCharacter`/`aboutMe`（实测 200、回读 0 长度）。
+新增 `tools/agent-persona.mjs --show|--strip|--restore`；插件登录时问一句，选「清空」才动，先备份再改。
+**当前状态：已清空**，备份在 `.agent-persona-backup.json`（已 gitignore）。`userFacts` 没动。
 
 ## 下一步（唯一的下一动作）
 把仓库 init + commit，然后问主人要不要建 GitHub 远端（`MYCF711/magpie-today`）并推上去 ——

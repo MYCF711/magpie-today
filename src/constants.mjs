@@ -81,6 +81,6 @@ export const SESSION_TOKEN_HINT =
 /** 单次会话等待上限。超了就当失败，不无限挂着。 */
 export const TURN_TIMEOUT_MS = 300_000
 /** 轮询兜底的间隔。WS 断掉时靠它收尾。 */
-export const POLL_INTERVAL_MS = 700
+export const POLL_INTERVAL_MS = 250
 
 export const USER_AGENT = "node"
