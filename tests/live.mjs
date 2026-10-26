@@ -133,8 +133,8 @@ await t("notool", async () => {
 
 await t("toolparse", async () => {
   const names = new Set(["read_file", "run_shell"])
-  const ok = extractToolCalls('{"tool_calls":[{"name":"read_file","arguments":{"path":"E:/a.txt"}}]}', names)
-  assert.deepEqual(ok, [{ name: "read_file", arguments: { path: "E:/a.txt" } }])
+  const ok = extractToolCalls('{"tool_calls":[{"name":"read_file","arguments":{"path":"/tmp/a.txt"}}]}', names)
+  assert.deepEqual(ok, [{ name: "read_file", arguments: { path: "/tmp/a.txt" } }])
   const fenced = extractToolCalls('```json\n{"tool_calls":[{"name":"run_shell","arguments":{"command":"ls"}}]}\n```', names)
   assert.deepEqual(fenced, [{ name: "run_shell", arguments: { command: "ls" } }])
   const unknown = extractToolCalls('{"tool_calls":[{"name":"nope","arguments":{}}]}', names)
@@ -320,7 +320,7 @@ await t("tools", async () => {
     },
   ]
   const prompt = buildPrompt(
-    [{ role: "user", content: "请读取 E:/test.txt 的内容" }],
+    [{ role: "user", content: "请读取 /tmp/test.txt 的内容" }],
     { tools },
   )
   assert.ok(prompt.includes("read_file"), "工具表应进提示")

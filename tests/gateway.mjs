@@ -19,7 +19,7 @@ const tools = [
 let pass = 0, total = 0
 const check = (name, ok, note) => { total++; if (ok) pass++; console.log(`${ok ? "✅" : "❌"} ${name}${note ? "  " + note : ""}`) }
 
-const msgs = [{ role: "system", content: "你是 DSH 的模型后端。" }, { role: "user", content: "读 E:/cfg.txt，只回内容。" }]
+const msgs = [{ role: "system", content: "你是 DSH 的模型后端。" }, { role: "user", content: "读 /tmp/cfg.txt，只回内容。" }]
 let r = await chat({ model: M, stream: false, messages: msgs, tools })
 const m1 = r.j.choices[0].message
 check("工具回合出 tool_calls", !!m1.tool_calls, `${r.ms}ms ${m1.tool_calls?.[0]?.function?.name ?? ""}`)
@@ -40,7 +40,7 @@ check("默认走工具：web_fetch 出 tool_calls", wfCalls.some(t => t.function
 r = await chat({ model: M, stream: false, stop: ["5"], messages: [{ role: "user", content: "数到 10，只输出数字空格分隔" }] })
 check("stop 截断", r.j.choices[0].message.content.trim() === "1 2 3 4", JSON.stringify(r.j.choices[0].message.content))
 
-r = await chat({ model: M, stream: false, tools, tool_choice: "none", messages: [{ role: "user", content: "读 E:/cfg.txt" }] })
+r = await chat({ model: M, stream: false, tools, tool_choice: "none", messages: [{ role: "user", content: "读 /tmp/cfg.txt" }] })
 check("tool_choice=none 不出调用", !r.j.choices[0].message.tool_calls, `${r.ms}ms`)
 
 r = await chat({ model: M, stream: false, messages: [{ role: "user", content: "只回复：好" }] })

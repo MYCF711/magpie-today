@@ -1,7 +1,7 @@
 {
   "name": "today-for-magpie",
-  "version": "0.1.0",
-  "description": "Today (todayai.cn) models in magpie: reads the desktop client's own sign-in on this machine, turns its agent channel into OpenAI chat completions with streaming and tool calls, and serves the account's two model tiers.",
+  "version": "0.2.0",
+  "description": "Today (todayai.cn) models in magpie. Phone-code sign-in (no desktop client needed); its agent channel turned into OpenAI chat completions with streaming, tool calls, reasoning and image input.",
   "type": "module",
   "main": "./index.mjs",
   "exports": "./index.mjs",
@@ -32,7 +32,7 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "magpie": {
-    "maxConcurrency": 2,
+    "maxConcurrency": 8,
     "icon": "assets/icon.png"
   }
 }

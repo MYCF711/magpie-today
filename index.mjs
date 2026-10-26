@@ -35,6 +35,7 @@ import { join } from "node:path"
 
 import { startSelfRegister } from "./src/self-register.mjs"
 import { ICON_DATA_URI } from "./src/icon.mjs"
+import { readUsage, readInvite, readResets } from "./src/growth.mjs"
 import {
   HOST,
   MODEL_OPTIONS,
@@ -644,12 +645,33 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             })
           }
 
+          // ★ 重置卡 ★ magpie 的 `resets` 字段就是给它留的位置。
+          //   拿不到不影响主流程（另一个接口，失败就当作没有）。
+          let resets
+          try {
+            const rc = await readResets(api)
+            if (rc?.totalCount) {
+              const earliest = rc.items
+                .map((x) => x.expiresAt)
+                .filter(Boolean)
+                .sort()[0]
+              resets = {
+                count: rc.totalCount,
+                until: earliest,
+                each: rc.items.map((x) => ({ until: x.expiresAt })),
+              }
+            }
+          } catch {
+            // 静默：重置卡是附加信息，读失败不该让整个用量面板报错
+          }
+
           return {
             plan: status.display?.title || status.plan || undefined,
             user: auth.accountId ?? undefined,
             until: status.entitlementEndsAt ?? status.currentPeriodEndAt ?? undefined,
             renew: "auto",
             windows,
+            ...(resets ? { resets } : {}),
           }
         } catch (e) {
           return { error: String(e?.message ?? e), windows: [] }

@@ -68,7 +68,7 @@ const base = {
   const res = await opts.fetch("https://api.todayai.cn/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "deepseek-v4.1-flash", messages: [{ role: "user", content: "读取 E:/demo.txt 的内容" }], tools, stream: false }),
+    body: JSON.stringify({ model: "deepseek-v4.1-flash", messages: [{ role: "user", content: "读取 /tmp/demo.txt 的内容" }], tools, stream: false }),
   })
   const j = await res.json()
   const m = j.choices[0].message

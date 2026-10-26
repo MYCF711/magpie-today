@@ -4,108 +4,103 @@
 
 ```
 模型      2 个    DeepSeek V4.1 Flash（1×）/ GLM 5.3（4×）
-登录      手机号 + 验证码，不需要桌面端
-额度      套餐用量（Pro，5 个维度分项）
-上下文    实测 34.8 万汉字 / 100 万 ASCII 字符（上限见下）
-速度      插件路径中位 2.40s ≈ 通道地板 2.54s（插件的开销在噪声内）
-多轮      Today 的会话里续着走，第 2 轮起只发增量
+登录      手机号 + 验证码，纯 HTTP，不需要桌面端
+额 度      Pro 月额度（6 个分项，按注册日重置）+ 重置卡张数
+上下文    实测 34.8 万汉字 / 100 万 ASCII 字符
+速度      插件路径中位 2.40s ≈ 通道地板 2.54s（开销在噪声内）
 并发      实测 16 并发全部成功、不串线（插件声明 8）
+思考      有（它自己写的推理摘要，见下）
 ```
-
-**独立运行**：不依赖 Today 桌面端 —— 这条有实测判据，不是宣称。
-
-```
-把 TodayCN.exe 全部杀掉（桌面端进程数 = 0）
-把 APPDATA 指向一个不存在的目录（切断一切桌面端文件）
-→ tests/live.mjs        14/14 通过
-→ tests/conversation.mjs 3/3  通过
-→ tests/fetch.mjs        三种响应形状全过
-→ tests/independent.mjs  5/5  通过
-→ 经 magpie 网关        HTTP 200，内容正确
-```
-
-三条支撑：
-- **登录**走 Today 自己的手机验证码接口（纯 HTTP），不需要客户端。
-- **设备身份**由插件自己生成并持久化（服务端不校验设备真伪，实测自造 id 照样 202）。
-- **桌面包只被惰性加载一次** —— 只有你主动选「从桌面端导入」那条路时才会 `await import`。
-  装了客户端的人可以少填一次验证码，但插件本身不因此变得「必需那个客户端」。
-
-Today 是一个 agent 产品，**没有 chat/completions 端点**。它的模型只能通过 agent 会话访问：
-
-```
-POST /v3/conversations            → 预定一个隔离会话
-POST /v3/messages                 → 往会话里追加一条用户消息
-GET  /v3/…/message-changes?waitMs → 长轮询，有新内容立刻回
-GET  /v2/messages?conversationId= → 确认终稿
-```
-
-本插件把这条 agent 通道翻译成 OpenAI Chat Completions 形状。
-
-非官方插件，与 TODAY AI PTE. LTD. 无关。
-
----
-
-## 三条实测出来的硬约束
-
-写在这里是因为它们**改变了这个插件的能力边界**，用户应该先知道：
-
-**① 没有真 token 流。** Today 的 agent 不在生成过程中吐字 —— 50ms 极密轮询下正文
-一次到齐（20.3 秒处 763 字符一次给全），WebSocket 的 `presentation` 事件里
-`turn.content.text` 恒为空数组。所以 SSE 是**语义上**的流式（形状对、客户端能正常解析），
-不是**节奏上**的流式：首字时间 ≈ 总耗时。数据见 [docs/internals.md](docs/internals.md) 第十三节。
-
-**② 每个调用方对话会占用 Today 里一个会话。** 插件用 `POST /v3/conversations` 给每个
-独立对话预定一个隔离会话，续聊只发增量。这些会话会出现在你的 Today 里，
-并按 Today 的过期时间回收。
-
-**③ 上下文上限有两条，按字节算的那条先到。**
-`body.text` 最多 1,000,000 **字符**（超了给 503），整个 JSON 请求体最多 1 MiB **字节**（超了给 413）。
-中文 3 字节/字符，所以中文场景先撞字节限制：实测 348,000 汉字通过、350,000 汉字 413。
-插件按 300,000 字符声明（给最坏情况留余量）。
-
-**④ 采样参数上游不收，能本地做的都做了，做不到的如实忽略。**
-实测把 `temperature` / `max_tokens` / `n` / `stop` / `response_format` 放进请求体，
-五个都 200 且模型行为一字不变（和 `tools` 一样被 schema 丢掉）。所以：
-
-| 参数 | 处理 |
-|---|---|
-| `stop` | ✅ 插件侧截断（多序列取最早出现的） |
-| `max_tokens` | ✅ 插件侧按**估算** token 截断（口径见 `src/tokens.mjs`，不是精确计数） |
-| `response_format` | ✅ 转成提示（实测：加了才给裸 JSON，不加会给围栏加解释） |
-| `temperature` / `top_p` / `seed` 等 | ⚠️ **无法控制，不假装生效** —— 会写进日志告诉你 |
-| `n > 1` | ⚠️ 只返回 1 条 |
-
-**⑤ 图像输入已支持（走上传，不是 URL）。**
-OpenAI 的 `image_url`（data URL 或 http(s) 都行）会被插件先上传到 `/v1/files`，
-再用返回的 `attachments` 引用随消息发出去 —— 这是唯一能让模型真看到图的路。
-
-```
-POST /v1/files (multipart)  → { file: { id, storagePath, type, size, … } }
-POST /v1/messages { conversationId, content, attachments: [{type,storagePath,filename,mimeType,size}] }
-```
-
-实测：发一张「上红下绿」的 64×64 图，问「有哪些颜色」——直连插件与经网关都答「红色，绿色」。
-`images` 那个字段**不是**这么用的（data URL / http URL 都给 400），别照它写。
-同一张图按内容哈希缓存，多轮重发历史不会重复上传。
-
-**⑥ 切模型是账号级操作。** `PUT /v1/pricing/model-option` 改的是账号的全局档位，
-不是单个请求 —— 也就是说，在 DSH 里切到 `today/glm-5.3`，你自己 Today 桌面端里选的模型
-也会跟着变。这是服务端设计，不是插件的选择。
 
 ---
 
 ## 功能
 
-- **手机验证码登录** —— 纯 HTTP，服务器、容器、没装客户端的机器都能用
-- **设备身份自持** —— 插件自己生成 UUID 并持久化，不冒充、不依赖任何客户端
-- **可选的桌面端导入** —— 装了客户端的人一键带走登录态
-- **流式输出** —— OpenAI 形状的 SSE（⚠ 上游不吐部分正文，见下）
-- **函数调用** —— 走文本协议模拟，`tools` 透传、`tool_calls` 按 OpenAI 格式返回
-- **模型切换** —— 两个档位，按请求里的 `model` 自动切（服务端是账号级设置）
-- **额度准** —— 套餐用量与到期时间都来自 `/v1/pricing/status`
-- **多账号** —— magpie 的多账号机制直接可用，每号一份登录态
-- **输出约束** —— `stop` / `max_tokens` / `response_format` 在插件侧落实（上游不收这些字段）
-- **5xx 重试** —— 幂等调用最多试 3 次；4xx 不重试
+- **两个模型档位** —— DeepSeek V4.1 Flash 与 GLM 5.3，实际效果由 Today 侧的路由决定。
+- **手机验证码登录** —— 纯 HTTP 打 Today 自己的接口，这台机器上不装 Today 也能用。
+- **流式与工具调用** —— 完整 OpenAI Chat Completions 形状；工具调用按文本协议翻译，实测可用。
+- **思考过程** —— 上游不吐思维链，所以让它把推理写进同一条 JSON，插件拆成 `reasoning_content`。**这是它自写的推理摘要，不是底层模型的思维链**，两者的区别见 [internals 第二十三节](./docs/internals.md)。
+- **图像输入** —— 走 `/v1/files` 上传，实测模型真能看见（不是收下占位符）。
+- **用量与重置卡** —— `auth.usage` 报套餐用量五个分项，和手上还剩几张重置卡。
+- **邀请链接** —— `node tools/invite.mjs` 打印你的邀请链接、已邀请人数、里程碑。
+- **多轮续聊** —— 会话里续着走，第 2 轮起只发增量（省 0.46s/轮）。
+
+---
+
+## 模型
+
+| 模型 | 上下文 | 图像 | 倍率 |
+|---|---|---|---|
+| `deepseek-v4.1-flash` | 100 万字符 | ✓ | 1× |
+| `glm-5.3` | 100 万字符 | ✓ | 4× |
+
+**上下文口径**：100 万是 **body.text 的字符数上限**。另有一条独立限制 —— 整个 JSON 体 ≤ 1 MiB，
+中文 3 字节/字符，所以**中文实际先撞字节那条**：实测 34.8 万汉字通过、35 万汉字 413。
+
+**思考**：`reasoning_content` 是它自己写出来的推理摘要。上游确实没有思维链（三处都查过，
+证据在 internals 第二十二节），这个字段是插件要求它写、再拆出来的。能看到它在想什么，
+但它可能写得简略、也可能事后合理化 —— 调试时别把两者当一回事。
+
+---
+
+## 额度
+
+**月额度，按注册日重置**（不是自然月）。
+
+```
+period            monthly
+currentPeriodEnd  2026-11-26   ← 额度重置：每月同一天的同一时刻
+entitlementEnds   2027-01-26   ← Pro 权益到期：和额度重置不是一回事
+```
+
+周期锚点是**账号注册的那一刻**（实测两个时间戳完全相同），所以你的重置日是每月那一天，
+不是 1 号。
+
+额度**分 6 个维度算，不是单一池**：
+
+```
+任务 · 对话 · 定时任务 · 每日简报 · 记忆更新 · 云电脑
+```
+
+`auth.usage` 把这些分项都报出来，`resetsAt` 用 `currentPeriodEndAt` —— 界面上看到的就是
+「这个月什么时候重置」，口径是对的。
+
+Pro 权益到期后服务端会显示「到期后可继续使用免费版」，插件这边不需要额外处理。
+
+---
+
+## 签到
+
+**没有每日签到。** 找遍了 `/v1/growth/*` 与 `/v1/pricing/*`，既没有 checkin 也没有 daily-reward；
+客户端日志里的 `app_daily_active` 是埋点事件，不计任何额度。所以 `auth.checkin` 返回 `inactive`。
+
+**重置卡不是签到**：它是邀请好友得来的，用一张把额度恢复到 100%。插件只读张数，**不自动用**
+—— 那是不可逆操作，由你决定。
+
+```bash
+node tools/invite.mjs            # 邀请链接 + 已邀请人数 + 里程碑
+node tools/invite.mjs --resets   # 还剩几张重置卡
+node tools/invite.mjs --use      # 用掉一张（不可逆）
+```
+
+重置卡的里程碑（实测）：邀请 1 位 → 1 次；3 位 → 2 次；7 位 → 3 次。
+
+---
+
+## 卸载 Today 桌面端会怎样
+
+| 能力 | 桌面端在线 | 桌面端关掉或卸载 |
+|---|---|---|
+| 模型对话 | ✓ | ✓ |
+| 工具调用（交给调用方执行） | ✓ | ✓ |
+| 流式 / 思考 / 图像 | ✓ | ✓ |
+| 让它自己碰本机文件、跑命令 | ✓ | ✗ |
+
+插件**默认不使用** Today 的原生能力去做事，文件操作与命令都通过文本协议交给调用方执行。
+所以桌面端只是「让它自己动手」那条备选路线的前提，不是插件的前提。
+
+这条有实测判据：把 `TodayCN.exe` 全杀掉、`APPDATA` 指向不存在的目录，
+`tests/live.mjs` 17/17、`tests/conversation.mjs` 3/3、`tests/independent.mjs` 5/5 全过。
 
 ---
 
@@ -113,85 +108,54 @@ POST /v1/messages { conversationId, content, attachments: [{type,storagePath,fil
 
 | 能力 | 状态 |
 |---|---|
-| Standard 模式（逐工具呈现） | ✅ 支持，实测 8/8（`tests/gateway.mjs`） |
-| 思考过程（`reasoning_content`） | ✅ 支持（模型自写推理摘要，见下） |
-| 图像输入 | ✅ 支持（`/v1/files` 上传 + `attachments`） |
-| 多轮 / 会话隔离 | ✅ 支持（`POST /v3/conversations`） |
-| **PTC 模式（`run_code` + 生成式 SDK）** | ❌ **不支持**，见下 |
+| Standard 模式（逐工具呈现） | ✅ 实测 8/8 |
+| 思考过程（`reasoning_content`） | ✅ |
+| **PTC 模式（`run_code` + 生成式 SDK）** | ❌ **不支持**，实测 1/5 |
 
-### 为什么不支持 PTC
-
-DSH 的 PTC 模式把工具收进一段 TypeScript SDK，模型只输出 `run_code({code, description})`。
-在这条通道上实测 **1/5**（5 道题：单工具 / 并发 / 循环 / 条件 / 纯回答），失败原因两类：
-
-1. **它优先用自己的原生工具。** 有 2 题直接跑 `DeviceList` / `DeviceInvoke` / `Bash` 自己干完了，
-   压根没进模板分支（连 `reasoning` 都没给）。
-2. **写出来的 `code` 不是要的东西。** 单工具那题写成了 `tools.bash({command:"echo check"})` 这种无意义内容；
-   循环题只 `glob` 了一下，没有循环。
-
-根因是结构性的：Today 的 agent **手上真能干活的工具**（Bash / DeviceInvoke / WebFetch），
-优先级高于「只写代码不执行」的指令。PTC 要求它**写程序**而不是**调一次工具**，
-冲突比 Standard 模式更激烈 —— 模型自然会想「我直接做不就行了」。
-
-**这不是客户端问题**，是这条通道的性质。所以插件声明里写明「只支持原生（逐工具）呈现」。
-
-⚠ 在 DSH 里请用 **Standard 模式**；选 PTC 会拿到 1/5 那种结果。
-
----
-
-## 模型
-
-| 模型 | 上下文 | 倍率 |
-|---|---|---|
-| `deepseek-v4.1-flash` | 声明 300,000 字符（上限：34.8 万汉字 / 100 万 ASCII） | 1× |
-| `glm-5.3` | 同上 | 4× |
-
-⚠ 模型选择是**账号级全局设置**（`PUT /v1/pricing/model-option`）。
-在本插件里切模型，会把你在 Today 桌面端里选的模型一起改掉 —— 这是服务端的设计，插件改不了。
+PTC 要求模型「写程序」而不是「调一次工具」，而这条通道上的 agent 手上有真能干活的工具，
+优先级更高，实测它会直接自己动手或写出无意义的代码。**在 DSH 里请用 Standard 模式。**
 
 ---
 
 ## 安装
 
-不需要先装 Today 桌面端。登录用手机号 + 验证码。
+在 magpie 的 **插件 → 发现** 搜 `today-for-magpie`，点**安装**。
 
-### 从本地目录（现在就能用）
-
-```bash
-magpie plugin add "D:\主工作区\magpie-today-plugin"
-printf '1\n' | magpie plugin login today     # 1 = 从本机 Today 桌面端导入
-```
-
-按目录装是**活链**：magpie 直接从那个目录加载，改完代码重新加载即可，不用复制产物。
-实测装完立刻生效，不用重启 magpie。
-
-### 从仓库源码（待发布）
+装完在插件页点**登录**，选「手机号 + 验证码」（不需要桌面端），填带国家码的手机号。
 
 ```bash
-magpie plugin add github:MYCF711/magpie-today
+# 命令行
+magpie plugin login today     # 选 1 = 手机验证码
+magpie plugin list | grep -A2 today
 ```
 
-⚠ 这条要等仓库推上去之后才通。npm 上还没有包：`magpie plugin add today-for-magpie` 现在装不上。
-
-装完确认：
+### 从源码装
 
 ```bash
-magpie plugin list
-# today  on
-#   today (Today, 2 models)  signed in as MYCF711
+magpie plugin add "<本仓库目录>"
 ```
+
+⚠ **改完源码必须重新 `add` 一次** —— magpie 不热重载插件代码。
 
 ---
 
 ## 常见问题
 
-**提示「找不到 Today 桌面端的登录态」？** 先打开 Today 桌面端登录一次。插件读的是 `%APPDATA%\Today CN\account-credentials.slot-*`（Electron safeStorage 加密，用 Windows DPAPI 解）。
+**Q：一定要装 Today 桌面端吗？**
+不用。登录、设备身份、对话全是纯 HTTP。装了的话可以少填一次验证码（多一条「从桌面端导入」）。
+桌面端只在「让它自己碰本机文件」时才需要在线。
 
-**为什么只有两个模型？** Today 账号可选的档位就这两个，其余 33 个 modelId 在 `/v1/llm/models` 里列着但账号无权选择（`PUT` 返回 400）。
+**Q：为什么没有每日签到？**
+Today 没有这个功能。重置卡是邀请好友换的，不是签到换的。
 
-**回复会不会变慢？** 比直连慢。Today 的 agent 通道是「投递 + 推送」，实测首字 3~6 秒，整段 3~10 秒。
+**Q：上下文到底多大？**
+100 万字符，但中文受 1 MiB 字节上限约束，实际约 34.8 万汉字。
 
-**会不会封号？** 本插件走的是桌面端自己的接口与设备身份，没有伪造、没有绕过。风险在于「自动化调用」本身，不在协议。
+**Q：思考过程是真的思维链吗？**
+不是。是它自己写出来的推理摘要。上游没有思维链可拿，这一点查过三处。
+
+**Q：为什么第一句要等很久？**
+上游不吐增量，整段想完才一次性交出来。所以「流式」是形状上的，首字≈总耗时。
 
 ---
 
@@ -199,39 +163,14 @@ magpie plugin list
 
 | 来源 | 用在哪 |
 |---|---|
-| [MYCF711/magpie-plugin-template](https://github.com/MYCF711/magpie-plugin-template)（MIT） | 插件骨架、九个钩子、README 结构 |
-| [MYCF711/magpie-freebuff-plugin](https://github.com/MYCF711/magpie-freebuff-plugin)（MIT） | SSE 合成、OpenAI 形状的响应改写、工具配对校验思路 |
+| [magpie-plugin-template](https://github.com/deepseek-ai/magpie-plugin-template) | 插件骨架、九项钩子契约、README 结构 |
+| `HOOKS.md`（从 magpie 二进制提取） | `auth.checkin` / `auth.usage` 的字段口径 |
+| Today 桌面端 `app.asar` / `prod.asar` | 协议取证：端点、参数、载荷上限、成长体系接口 |
 
 ---
 
-> 更新记录：[`CHANGELOG.md`](./CHANGELOG.md)
-
 ## 许可
 
-MIT。
+MIT
 
-### 默认行为：走工具，不碰沙盒
-
-插件**默认不使用 Today 的原生能力**（沙盒 / 设备能力 / 连接器）去做事，所有文件操作与命令
-都通过文本协议交给调用方执行。理由：调用方在用户的机器上，能审计、能出卡片、能落盘。
-
-模板里有三条硬约束（实测都生效）：
-
-1. **不要动你自己的沙盒** —— 实测它不再调用 `Bash`/`DeviceInvoke`
-2. **路径必须完整** —— 绝对路径；实测连用户给的相对路径它都会自己补成绝对路径
-3. **回复末尾列出涉及的文件路径** —— 因为 DSH 的「打开所在地」卡片插件给不了（见下）
-
-要恢复「让它用自己的原生能力」（能省一轮往返，但会跑到别的机器上），设 `TODAY_NATIVE_SPLIT=1`。
-
-### 关于 DSH 的文件卡片
-
-DSH 渲染「可直接打开所在地」的卡片，判据是消息 content 里有：
-
-```ts
-{ type: 'file', attachment: { attachmentId, name, bytes } }
-```
-
-`attachmentId` 必须是 DSH 浏览器端 `dsh-client-ui-attachment` 服务**登记过的内部 ID**，
-由用户上传或 DSH 自己的工具产生。**插件在网关后面，够不到那个服务** —— 所以卡片这条路走不通。
-
-替代方案就是上面第 3 条硬约束：让它把路径写进正文，人自己去找。
+> 更新记录：[CHANGELOG.md](./CHANGELOG.md) · 协议取证与决策依据：[docs/internals.md](./docs/internals.md)

@@ -47,7 +47,7 @@ export function outputTemplate(tools) {
 
 {"kind":"answer","reasoning":"这是简单算术，不需要工具。","content":"1+1 等于 2。"}
 
-{"kind":"tool_call","reasoning":"需要读文件内容才能回答。","tool_calls":[{"name":"read","arguments":{"path":"D:/x/a.txt"}}]}
+{"kind":"tool_call","reasoning":"需要读文件内容才能回答。","tool_calls":[{"name":"read","arguments":{"path":"<绝对路径>"}}]}
 
 ## 两条硬约束（违反即视为错误输出）
 
@@ -57,7 +57,7 @@ export function outputTemplate(tools) {
 **2. 路径必须完整。** 调用任何涉及文件/目录的工具时，path 与 workdir 必须是**绝对路径**，
    不要用相对路径、不要用波浪号、不要省略盘符或根目录。
 
-   对：{"path":"D:/主工作区/proj/package.json"}
+   对：{"path":"<盘符或根>/<目录>/<文件>"}
    错：{"path":"./package.json"}  {"path":"package.json"}
 
 ## 第三条：回复里要给出路径
