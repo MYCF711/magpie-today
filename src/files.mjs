@@ -53,6 +53,32 @@ function kindOf(mime) {
   return "file"
 }
 
+
+/**
+ * 从「消息数组」或「content 数组」里收集图片 url。
+ *
+ * 判据：`{role, content}` 是消息，`{type:"image_url"}` 是 part。同一个数组里
+ * 两种都有是不可能的，所以看第一个元素的形状即可；两者都试一遍也无害。
+ */
+export function collectImageUrlsFlexible(input) {
+  const out = []
+  const walk = (node) => {
+    if (!node || typeof node !== "object") return
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item)
+      return
+    }
+    if (node.type === "image_url") {
+      const url = node?.image_url?.url ?? node?.image_url
+      if (typeof url === "string" && url) out.push(url)
+      return
+    }
+    if (node.content !== undefined) walk(node.content)
+  }
+  walk(input)
+  return [...new Set(out)]
+}
+
 /**
  * 上传一段二进制，返回可直接放进 `attachments` 的对象。
  *
@@ -137,13 +163,18 @@ export async function fetchRemote(url, { timeout = 30_000 } = {}) {
 }
 
 /**
- * 一条消息里的图片 → 可放进 `attachments` 的引用数组。
+ * 把「消息」或「消息里的 content 数组」里的图片全部上传，返回可放进 `attachments` 的引用。
+ *
+ * ⚠ 这个函数**两种形状都吃**，是刻意的：曾经它只吃 content 数组，而调用方传了
+ *   整个 `messages`，于是 `imagesFromContent` 遍历到的是 `{role, content}`、
+ *   `type` 不是 `image_url`，静默返回空 —— 图片就这么丢了，模型只看到 `[图片]` 占位符。
+ *   现在把拍平做在函数内部，调用方不用记「该传哪一种」。
  *
  * 任何一张图上传失败都**抛错**，不返回残缺的数组 —— 静默丢图比报错糟得多：
  * 调用方会以为模型看过图，其实是瞎子。
  */
-export async function attachmentsFor(client, content, { token, deviceId } = {}) {
-  const urls = imagesFromContent(content)
+export async function attachmentsFor(client, input, { token, deviceId } = {}) {
+  const urls = collectImageUrlsFlexible(input)
   if (urls.length === 0) return []
   const refs = []
   for (const url of urls) {

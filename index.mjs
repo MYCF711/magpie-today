@@ -48,7 +48,7 @@ import { deviceId as persistentDeviceId } from "./src/device.mjs"
 import { conversationHead, createConversationPool } from "./src/conversationpool.mjs"
 import { createConversation, listConversationMessages, messageCount, sendToConversation } from "./src/conversation.mjs"
 import { sendOtp, verifyOtp } from "./src/login.mjs"
-import { buildPrompt, collectImageUrls, delegatedNames, extractToolCalls, streamTurn } from "./src/chat.mjs"
+import { buildPrompt, delegatedNames, extractToolCalls, streamTurn } from "./src/chat.mjs"
 import { attachmentsFor } from "./src/files.mjs"
 import { constrainOutput, unsupportedNotes } from "./src/params.mjs"
 import { errorResponse, nonStreamResponse, streamResponse } from "./src/openai.mjs"
@@ -476,10 +476,11 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                   afterCount = messageCount(rows)
                   // 这一轮新增的消息里若有图，先上传再随消息发出去。
                   // 之前已经发过的图不会再出现（增量里没有），所以不会重复上传。
-                  const imgs = collectImageUrls(messages.slice(sent))
-                  const atts = imgs.length
-                    ? await attachmentsFor(api, messages.slice(sent), { token: fresh.access, deviceId: deviceId(fresh) })
-                    : undefined
+                  // 附件上传：只用这一个入口判断有没有图，别在两处各判一次
+                  const atts = await attachmentsFor(api, messages.slice(sent), {
+                    token: fresh.access,
+                    deviceId: deviceId(fresh),
+                  })
                   await sendToConversation(api, conversationId, incremental, { attachments: atts })
                 }
               } catch (e) {
@@ -501,10 +502,10 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               try {
                 const conv = await createConversation(api)
                 conversationId = conv.conversationId
-                const imgs = collectImageUrls(messages)
-                const atts = imgs.length
-                  ? await attachmentsFor(api, messages, { token: fresh.access, deviceId: deviceId(fresh) })
-                  : undefined
+                const atts = await attachmentsFor(api, messages, {
+                  token: fresh.access,
+                  deviceId: deviceId(fresh),
+                })
                 await sendToConversation(api, conversationId, prompt, { attachments: atts })
                 // 新会话：上游此刻只知道这一条，水位线是 0
                 afterCount = 0

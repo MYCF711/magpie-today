@@ -37,6 +37,7 @@ node tests/fetch.mjs           # 直接验 loader.fetch 的三种响应形状
 node tests/conversation.mjs    # 会话隔离 / 增量续聊 / 水位线（3 条消息）
 node tests/gateway.mjs         # 经网关的验收：多轮/工具/分流/stop/tool_choice/usage/SSE
 node tests/independent.mjs     # 独立性自测：不依赖 Today 桌面端（静态检查 + 无客户端时发消息）
+node tests/image.mjs           # 图像输入：上传 → attachments → 模型真能看见（1 条消息）
 node tools/agent-persona.mjs --show   # 看 Today 侧人设（清空后才轮到调用方的提示词说话）
 node tools/read-session.mjs    # 打印本机 session token（凭据，别外传）
 ```
@@ -69,6 +70,10 @@ node tests/gateway.mjs                                 # 经网关验收
   assistant 记录（有 `"Worked on it"` 这类中间态）。只取最后一条 assistant 会把**上一轮的终稿**
   当成这一轮的答案 —— 必须按条数切水位线（`readTurn(rows, afterCount)`）。
 - **长轮询的参数是 `afterSequence`**，漏了直接 400；`waitMs` 上限 25000。
+- **图片必须走上传**：`attachments: [{type,storagePath,filename,mimeType,size}]`，
+  **五个字段缺一不可**（缺 `size` 就 400）。`images` 字段不是这么用的（data URL/http URL 都 400）。
+  另外 `attachmentsFor()` 两种输入形状都吃（messages 或 content 数组）—— 曾经因为只吃后者、
+  调用方传了前者而静默丢图，模型只看到 `[图片]` 占位符。
 - **Today 的 agent 自带 Memory 工具**，account 级，跨会话可见。**默认已放开**（按主人指示，
   记忆是它的既有能力，压制等于砍功能）。要恢复压制：设 `TODAY_NO_MEMORY=1`。
   那条压制语句的措辞是实测过的，换法就不灵（见 docs/internals.md 第十四节）。

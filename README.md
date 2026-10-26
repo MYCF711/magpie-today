@@ -75,10 +75,18 @@ GET  /v2/messages?conversationId= → 确认终稿
 | `temperature` / `top_p` / `seed` 等 | ⚠️ **无法控制，不假装生效** —— 会写进日志告诉你 |
 | `n > 1` | ⚠️ 只返回 1 条 |
 
-**⑤ 图像输入未实现。**
-`/v1/messages` 的 `images` 只接受 storagePath（要先走 `/v1/files` 上传），
-data URL 与 http URL 都 400；v3 的 `bodyType` 也只有 `text` 一个枚举值。
-要支持得先实现文件上传，目前没做 —— 本插件只处理文本。
+**⑤ 图像输入已支持（走上传，不是 URL）。**
+OpenAI 的 `image_url`（data URL 或 http(s) 都行）会被插件先上传到 `/v1/files`，
+再用返回的 `attachments` 引用随消息发出去 —— 这是唯一能让模型真看到图的路。
+
+```
+POST /v1/files (multipart)  → { file: { id, storagePath, type, size, … } }
+POST /v1/messages { conversationId, content, attachments: [{type,storagePath,filename,mimeType,size}] }
+```
+
+实测：发一张「上红下绿」的 64×64 图，问「有哪些颜色」——直连插件与经网关都答「红色，绿色」。
+`images` 那个字段**不是**这么用的（data URL / http URL 都给 400），别照它写。
+同一张图按内容哈希缓存，多轮重发历史不会重复上传。
 
 **⑥ 切模型是账号级操作。** `PUT /v1/pricing/model-option` 改的是账号的全局档位，
 不是单个请求 —— 也就是说，在 DSH 里切到 `today/glm-5.3`，你自己 Today 桌面端里选的模型
