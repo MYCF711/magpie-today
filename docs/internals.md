@@ -937,3 +937,25 @@ ASCII 35 万字只有 0.33 MiB、照样通过 ⇒ **按字节算，不按字符*
 
 ⚠ 改这个文件前先备份（我在每次改前都留了 `cordis.patch.yml.bak-*`）。
 YAML 解析失败时 DSH 会保留上一棵可用的树 —— 不会崩，但你的改动也不生效。
+
+---
+
+## 二十二、没有思考过程可拿
+
+DSH 界面上那条「深度求索中…」是 DSH 自己的活动指示，不是上游吐的思维链。
+
+查证（三处都空）：
+
+| 查的地方 | 结果 |
+|---|---|
+| assistant 消息的 `messages[]` part 类型 | 只有 `messageType: "text"` |
+| v3 item 的 `body.content.parts[].type` 全集 | 只有 `text` |
+| 客户端 bundle 里的 `reasoning` | **0 处** |
+
+账号设置里确实有 `thinkingEnabled`（`PATCH /v1/users/me/settings`，实测能存能回读），
+但那只是**服务端内部的思考开关**，开了之后前端也拿不到思维链 —— 返回仍是纯 text。
+
+⚠ 网关 `/v1/models` 里那个 `reasoning: true` / `reasoning_levels: ["max"]`
+是 **magpie 自己的标注**（它按组声明的），不是 Today 的能力。别据此以为能拿思维链。
+
+⇒ 本插件不做 reasoning 转发。DSH 侧如果显示「深度求索中」，那是它自己的状态。
