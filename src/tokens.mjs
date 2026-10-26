@@ -32,8 +32,13 @@ export function estimateTokens(text) {
 /**
  * 一轮请求/响应的用量。
  *
- * `promptText` 传**实际上游收到的那段**（也就是 buildPrompt 的产物），
- * 不传调用方的原始 messages —— 后者与上游看到的不是一回事，估出来会偏。
+ * `promptText` 传**调用方眼中的完整上下文**（`buildPrompt(messages)` 的全量产物），
+ * 不是我们实际发出去的增量。为什么：调用方拿 `prompt_tokens` 判上下文水位、
+ * 决定何时压缩；续用 Today 会话时我们只发增量，若按增量估，调用方会以为
+ * 上下文几乎没长，于是永不压缩，最后撞上上游的载荷上限。
+ *
+ * 代价：这个数会略大于上游真正读到的量（它已经记得的一部分被重复计了）。
+ * 对「该不该压缩了」这个用途，宁可偏高 —— 偏高只是提前压缩，偏低会炸。
  */
 export function estimateUsage({ promptText, completionText } = {}) {
   const prompt = estimateTokens(promptText)

@@ -419,15 +419,20 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             let conversationId = null
             let afterCount = 0
             let sent = 0
-            // 本轮实际上游收到的文本（估算用量要用它）
-            let promptText = ""
+            // usage 估算的输入。
+            //
+            // ⚠ 必须是**调用方眼中的完整上下文**，不是我们实际发出去的增量：
+            //   调用方用 prompt_tokens 判上下文水位、决定何时压缩。续用会话时我们只发
+            //   增量，若按增量估，调用方会以为上下文几乎没长，于是永不压缩，
+            //   最后撞上上游的载荷上限。所以这里按全量估。
+            const fullContextText = buildPrompt(messages, { tools })
+            let promptText = fullContextText
 
             if (slot) {
               // 续用：只发 Today 会话还不认识的那几条
               conversationId = slot.conversationId
               sent = slot.sent
               const incremental = buildPrompt(messages.slice(sent), {})
-              promptText = incremental
               try {
                 if (incremental.trim()) {
                   const rows = await listConversationMessages(api, conversationId, { limit: 60 })
@@ -447,7 +452,6 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
 
             if (!conversationId) {
               const prompt = buildPrompt(messages, { tools, toolChoice: body.tool_choice })
-              promptText = prompt
               if (!prompt.trim()) {
                 return errorResponse(400, "没有可发送的内容", "invalid_request_error")
               }
