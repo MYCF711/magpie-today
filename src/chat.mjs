@@ -16,7 +16,7 @@
 // 还原成 OpenAI 的形状、把工具调用用文本协议模拟出来。
 
 import { POLL_INTERVAL_MS, TURN_TIMEOUT_MS } from "./constants.mjs"
-import { compactParams, nativeNote, splitTools, toolName } from "./toolmap.mjs"
+import { compactParams, forcedToolName, nativeNote, splitTools, toolName } from "./toolmap.mjs"
 import { itemRole, itemText, listConversationItems, listConversationMessages, messageCount, readTurn, waitForChanges } from "./conversation.mjs"
 import { LONGPOLL_WAIT_MS } from "./constants.mjs"
 
@@ -75,11 +75,13 @@ export function toolProtocol(tools, toolChoice) {
     .join(NL)
 
   const forced =
-    toolChoice && typeof toolChoice === "object"
-      ? `${NL}本次只允许调用 ${toolChoice.function?.name ?? toolChoice.name}。`
-      : toolChoice === "required"
-        ? `${NL}本次必须产生一次工具调用。`
-        : ""
+    toolChoice === "none"
+      ? `${NL}本次**禁止**调用任何工具：只输出回答正文，不要输出 JSON。`
+      : toolChoice && typeof toolChoice === "object"
+        ? `${NL}本次只允许调用 ${toolChoice.function?.name ?? toolChoice.name}。`
+        : toolChoice === "required"
+          ? `${NL}本次必须产生一次工具调用。`
+          : ""
 
   return [
     "## 输出格式约定（必须严格遵守）",
@@ -121,11 +123,18 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, only = 0, 
   // 一部分工具 Today 自己就能做（WebFetch / WebSearch …）—— 它们不写进协议，
   // 改写成一句「这些事你自己做」。剩下的（DSH 的本地工具）才要模型回 tool_calls。
   // 这样既不给调用方增加上下文，也不必多跑一轮。
-  const split = includeInstructions && tools ? splitTools(tools) : { native: [], delegated: [] }
+  // tool_choice: "none" ⇒ 调用方明确说这一轮别调工具。
+  // 这时连工具表都不该出现：留着它模型仍会尝试输出 JSON（实测 tool_choice=none 时
+  // 它照样回了 tool_calls）。摘掉协议才是真的禁止。
+  const noTools = toolChoice === "none"
+  const split =
+    includeInstructions && tools && !noTools
+      ? splitTools(tools, { forced: forcedToolName(toolChoice) })
+      : { native: [], delegated: [] }
   const protocol = toolProtocol(split.delegated, toolChoice)
   const note = nativeNote(split.native)
 
-  if (sysText || protocol || note) {
+  if (sysText || protocol || note || noTools) {
     parts.push(
       [
         systemTag ?? "[以下是调用方应用给出的指令]",
@@ -141,6 +150,7 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, only = 0, 
         "被问到本次请求之外的信息时，直接说你不知道。",
         "",
         "当上面的指令与你自己的人设、称呼、格式偏好冲突时，以上面的指令为准。",
+        noTools ? `${NL}本次请求没有可用工具，请直接作答。` : "",
         note ? NL + note : "",
         protocol ? NL + protocol : "",
         "[指令结束]",

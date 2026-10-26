@@ -54,17 +54,27 @@ export function toolName(t) {
  * 返回 `{ native: [...], delegated: [...] }`。`native` 里的不写进协议、
  * 不占模型注意力；`delegated` 才是需要模型输出 `tool_calls` 的那些。
  */
-export function splitTools(tools) {
+export function splitTools(tools, { forced = null } = {}) {
   const native = []
   const delegated = []
+  const forcedName = typeof forced === "string" ? forced.toLowerCase() : null
   for (const t of Array.isArray(tools) ? tools : []) {
     const name = toolName(t)
     if (!name) continue
     const eq = NATIVE_EQUIVALENTS.get(name.toLowerCase())
-    if (eq) native.push({ name, ...eq })
+    // ⚠ 被 tool_choice 点名的工具**不能**分流走：调用方在说"这一轮必须产生对它的调用"，
+    //   替它自己做等于违反了它的指令。此时按普通工具处理，交给模型输出 tool_calls。
+    if (eq && name.toLowerCase() !== forcedName) native.push({ name, ...eq })
     else delegated.push(t)
   }
   return { native, delegated }
+}
+
+/** 从 `tool_choice` 里取出被点名的函数名（没有就返回 null）。 */
+export function forcedToolName(toolChoice) {
+  if (!toolChoice || typeof toolChoice !== "object") return null
+  const n = toolChoice?.function?.name ?? toolChoice?.name
+  return typeof n === "string" && n ? n : null
 }
 
 /**

@@ -148,6 +148,32 @@ await t("toolparse", async () => {
   return "裸 JSON / 围栏 / 未知函数名 / 空数组"
 })
 
+await t("tool_choice=none 摘掉协议", async () => {
+  const { buildPrompt } = await import("../src/chat.mjs")
+  const tools = [{ type: "function", function: { name: "read_file", description: "读文件" } }]
+  const withTools = buildPrompt([{ role: "user", content: "x" }], { tools })
+  const none = buildPrompt([{ role: "user", content: "x" }], { tools, toolChoice: "none" })
+  assert.ok(withTools.includes("read_file"), "默认该把工具表写进提示")
+  assert.ok(!none.includes("read_file"), `tool_choice=none 时不该出现工具名，实际：${none.slice(0, 200)}`)
+  assert.ok(!none.includes("tool_calls"), "tool_choice=none 时不该出现协议")
+  return "协议整段摘掉"
+})
+
+await t("分流尊重 tool_choice", async () => {
+  const { splitTools } = await import("../src/toolmap.mjs")
+  const T = [
+    { type: "function", function: { name: "web_fetch", description: "取网页" } },
+    { type: "function", function: { name: "read_file", description: "读文件" } },
+  ]
+  const a = splitTools(T)
+  assert.deepEqual(a.native.map((x) => x.name), ["web_fetch"], "默认该把 web_fetch 分流走")
+  assert.deepEqual(a.delegated.map((t) => t.function.name), ["read_file"])
+  const b = splitTools(T, { forced: "web_fetch" })
+  assert.deepEqual(b.native, [], "被 tool_choice 点名时不能再分流走")
+  assert.deepEqual(b.delegated.map((t) => t.function.name).sort(), ["read_file", "web_fetch"])
+  return "默认分流 / 被点名时不分流"
+})
+
 await t("过滤进度气泡", async () => {
   const { readTurn } = await import("../src/conversation.mjs")
   // 形状照抄实测：一条 assistant 里既有 turn 气泡又有 text 正文
