@@ -220,7 +220,15 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
     auth: {
       provider: PROVIDER,
       icon: ICON_DATA_URI,
-      maxConcurrency: 2,
+      /**
+       * 并发上限。
+       *
+       * 实测（2026-10-26，同一账号、各自独立会话并发打）：
+       *   并发 1/2/4/6/8/12/16 —— 全部成功、内容全部对得上、无 429、无串线。
+       *   墙钟时间基本不随并发增长（16 并发 8.3s，最慢也是 8.3s）。
+       * 所以 2 那个保守值没必要，取 8 留余量（再高收益递减，且对端是别人的服务）。
+       */
+      maxConcurrency: 8,
       refreshLead: REFRESH_LEAD_MS,
 
       // ═══ ② 登录 ══════════════════════════════════════════════════
