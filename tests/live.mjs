@@ -240,6 +240,30 @@ await t("图像输入支持两种 content 形状", async () => {
   return "messages 与 content 都行"
 })
 
+await t("技能目录变化不影响会话复用", async () => {
+  const { coreHead, conversationHead, stripSkillSection } = await import("../src/conversationpool.mjs")
+  const tools = [{ type: "function", function: { name: "edit", parameters: { type: "object", properties: {} } } }]
+  // 用数组 join 拼，避免模板里出现真换行
+  const NL = String.fromCharCode(10)
+  const mk = (v) => [
+    { role: "system", content: ["你是鲸鱼娘。", "", "## 硬规则", "- 不许虚报", "", "## 技能", "- a: " + v].join(NL) },
+    { role: "user", content: "改个颜色" },
+  ]
+  const a = mk("v1"), b = mk("v2")
+  // 技能目录变：旧键判定不匹配（换会话），新键判定一致（继续复用）
+  assert.notEqual(conversationHead(a, { tools }), conversationHead(b, { tools }), "旧键该判定为不匹配")
+  assert.equal(coreHead(a, { tools }), coreHead(b, { tools }), "新键该判定为一致（技能变化不影响复用）")
+  // 核心变了（规则不同）必须换会话
+  const c = [{ role: "system", content: ["你是鲸鱼娘。", "", "## 硬规则", "- 完全不同的规则"].join(NL) }, { role: "user", content: "改个颜色" }]
+  assert.notEqual(coreHead(a, { tools }), coreHead(c, { tools }), "规则变了必须换会话")
+  // 剥离要精准：技能段删掉，规则段留住
+  const stripped = stripSkillSection(a[0].content)
+  assert.ok(!stripped.includes("技能"), "技能段该被剥掉")
+  assert.ok(stripped.includes("不许虚报"), "规则段不该被误删")
+  assert.ok(stripped.includes("你是鲸鱼娘"), "persona 不该被误删")
+  return "技能变仍复用 / 规则变换会话 / 剥离精准"
+})
+
 await t("提示词不含任何产品名（普适化）", async () => {
   const { buildPrompt } = await import("../src/chat.mjs")
   const tools = [

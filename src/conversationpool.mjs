@@ -183,3 +183,67 @@ export function createConversationPool({ idleMs = IDLE_MS, max = MAX_ENTRIES } =
     _entries: entries,
   }
 }
+/**
+ * 和 `conversationHead` 同形状的「核心头」：**只含 persona + 规则，不含技能目录**。
+ *
+ * 为什么需要它：`conversationHead` 把整个 system 拼进键里。而客户端每次注入的系统提示词
+ * 含**技能目录**（本机实测 16 个技能 ≈ 4769 字符），装一个技能它就会变 ⇒ 键变 ⇒
+ * 会话被判定为不匹配 ⇒ **换新会话、整段历史全量重发**（20 轮 × 2000 字符 = 4 万字符白烧）。
+ *
+ * 所以会话复用改用这个键：技能目录变化不影响复用，历史照旧续着走。
+ *
+ * ⚠ 代价：技能目录不同时也可能复用同一个会话，于是模型看到的技能目录是**第一次那版**。
+ *   这对「文档工作流」影响很小（技能只是流程提示），但要知道这个折中：
+ *   **复用优先，技能目录的新鲜度让位。** 真要换技能目录生效，重启会话即可。
+ */
+export function coreHead(messages, { model = "", tools = [] } = {}) {
+  const list = Array.isArray(messages) ? messages : []
+  const sys = list
+    .filter((m) => m?.role === "system")
+    .map((m) => stripSkillSection(messageShape(m).content))
+    .join("\n")
+  const firstUser = list.find((m) => m?.role === "user")
+  return digest([
+    { model: String(model) },
+    { tools: (Array.isArray(tools) ? tools : []).map((t) => t?.function?.name ?? t?.name ?? "").sort() },
+    { sys },
+    firstUser ? messageShape(firstUser) : null,
+  ])
+}
+
+/**
+ * 从系统提示词里剥掉「技能目录」那一段。
+ *
+ * 认两类形状（客户端常见写法）：
+ *   · `## 技能` / `# Skills` 起头的那一节，删到下一个同级或更高级标题为止
+ *   · `<skills>…</skills>` 这类标签包起来的块
+ *
+ * ⚠ 剥不掉就原样返回 —— 宁可键不稳（回到旧行为），也不要误删规则段落。
+ */
+export function stripSkillSection(text) {
+  const s = typeof text === "string" ? text : ""
+  if (!s) return s
+
+  // 标签形式
+  let out = s.replace(/<(skills?|available_skills)>[\s\S]*?<\/\1>/gi, "")
+
+  // 标题形式：找含「技能」或 Skills 的标题，删到下一个同级或更高级标题
+  const lines = out.split("\n")
+  const kept = []
+  let skipping = false
+  let skipLevel = 0
+  for (const line of lines) {
+    const m = /^(#{1,3})\s+(.*)$/.exec(line)
+    if (m) {
+      const level = m[1].length
+      if (skipping && level <= skipLevel) skipping = false
+      if (/技能|skills?\b/i.test(m[2])) {
+        skipping = true
+        skipLevel = level
+        continue
+      }
+    }
+    if (!skipping) kept.push(line)
+  }
+  return kept.join("\n")
+}

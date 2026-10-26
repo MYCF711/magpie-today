@@ -46,7 +46,7 @@ import {
 } from "./src/constants.mjs"
 import { createClient, describeError, exchangeSession } from "./src/api.mjs"
 import { deviceId as persistentDeviceId } from "./src/device.mjs"
-import { conversationHead, createConversationPool } from "./src/conversationpool.mjs"
+import { conversationHead, coreHead, createConversationPool } from "./src/conversationpool.mjs"
 import { createConversation, listConversationMessages, messageCount, sendToConversation } from "./src/conversation.mjs"
 import { sendOtp, verifyOtp } from "./src/login.mjs"
 import { buildPrompt, delegatedNames, extractToolCalls, streamTurn } from "./src/chat.mjs"
@@ -451,7 +451,23 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             // 对话头 = 模型 + 工具清单 + 系统提示词 + 第一条用户消息。
             // 用「头 + 水位线」而不是「全史指纹」：后者会让工具结果回合漏命中，
             // 那一回合的历史比上一轮多了一条 assistant(tool_calls)。
-            const head = conversationHead(messages, { model: wantOption ?? "", tools })
+            //
+            // ★ 为什么用 coreHead 而不是 conversationHead ★
+            //
+            // 客户端的系统提示词里含**技能目录**（本机实测 16 个技能 ≈ 4769 字符），
+            // 而这个目录会随「装一个技能」变化。用全量 system 当键 ⇒ 键变 ⇒ 换新会话 ⇒
+            // **整段历史全量重发**（20 轮 × 2000 字符 = 4 万字符，白烧）。
+            //
+            // coreHead 把技能目录剥掉再算键：换技能不影响会话复用。
+            // 折中是「技能目录的新鲜度让位」—— 模型看到的可能还是首次那版。
+            // 详见 src/conversationpool.mjs 的 coreHead 注释。
+            const head = coreHead(messages, { model: wantOption ?? "", tools })
+            // 留一份全量键用于排障：两者不同 = 这次只差技能目录（复用照常），
+            // 一样 = 核心部分也变了（该换会话）。
+            const strictHead = conversationHead(messages, { model: wantOption ?? "", tools })
+            if (process.env.TODAY_PROBE === "1" && head !== strictHead) {
+              log("排障：技能目录变了，但核心头一致 ⇒ 继续复用会话")
+            }
             // 传了但我们控制不了的参数：记一笔，日志里说清楚，不假装生效
             const ignored = unsupportedNotes(body)
             if (ignored.length) log(`本次忽略这些参数（上游 agent 通道不接受）：${ignored.join(", ")}`)
