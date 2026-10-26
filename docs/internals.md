@@ -765,3 +765,79 @@ agentCharacter = "你会先说菠萝，不多说别的。"
 
 指令段只在**每个会话的第一轮**出现。所以「只发一次」是现成行为，
 差别只是：这一次必须在**消息**里，不能在**人设**里。
+
+---
+
+## 十九、设备工具：权限怎么开、开了之后它能干什么
+
+Today 的 agent 除了服务端那 19 个工具，还有一套**设备工具**（53 个 capabilityId），
+由桌面端在本机执行。默认只开 `windows_other_files`（用户主目录），
+`script.shell` 与 `ghost.*` 全在排除表里。
+
+### 19.1 权限存在哪、怎么改
+
+存在桌面端的 userData：
+
+```
+%APPDATA%\Today CN	ool-authorizations-v2\<sha256(environment + accountId)>.json
+```
+
+结构（v2）：
+
+```json
+{ "version": 2,
+  "authorization": { "connectorIds": [...], "excludedToolIds": [...],
+                     "fileRoots": [...], "committed": true },
+  "effectiveAuthorization": { ...同上... } }
+```
+
+**两个字段都要改**（`authorization` 与 `effectiveAuthorization`），否则生效的仍是旧的。
+改完必须重启桌面端 —— 它启动时读这个文件，运行中不重读。
+
+Windows 侧共 18 个连接器可用：`windows_desktop` / `_documents` / `_downloads` / `_other_files`、
+`_clipboard` / `_screen` / `_battery` / `_calendar` / `_contacts` / `_reminders` / `_notes` /
+`_mail` / `_outlook` / `_location` / `_ghost` / `_shell` / `_system` / `_device`。
+
+### 19.2 「文件根」只有四个，别盘符天生进不去
+
+`ToolFileRoot` 的枚举就四个：`desktop` / `documents` / `downloads` / `other_files`
+（`other_files` = 用户主目录，且排除前三个）。
+
+⇒ 把 18 个连接器全开、`fileRoots` 填满这四项，**`E:` `D:` 这类独立盘符依然读不到**。
+实测：让它读 `E:/__probe/perf.txt`，答「文件读取只授权了四个根目录…」。
+
+### 19.3 但 `script.shell` 能绕过它
+
+放开 `windows_shell`（capabilityId `script.shell`）之后，它可以在本机跑任意命令。
+实测三条全过：
+
+| 任务 | 结果 | 耗时 |
+|---|---|---|
+| `dir D:\主工作区` | ✅ 返回真实目录列表（并自己处理了 GBK 乱码，用 UTF-8 重跑一次） | 16.1s |
+| `echo hello_from_shell` | ✅ 原样回显 | 5.8s |
+| 写文件再读回 | ✅ 写入 `%USERPROFILE%\__probe_write.txt` 并读回 | 12.3s |
+
+⇒ **「完全放开」的实质是 `script.shell`，不是文件根。** 只要它开着，
+整台机器都能碰（包括文件根之外），文件根那四个枚举值就只是「直读」的快捷方式。
+
+⚠ 这是真实的安全面：开 `script.shell` = 让 Today 的 agent 在你的账户下执行任意命令。
+主人明确要求全开，做了；备份留在
+`tool-authorizations-v2/*.json.bak-before-open-*`，要收回就还原那个文件并重启桌面端。
+
+### 19.4 摘出来的能力清单（Windows）
+
+| 连接器 | 能力 |
+|---|---|
+| `windows_{desktop,documents,downloads,other_files}` | `fs.read` `fs.list` `fs.stat` |
+| `windows_clipboard` | `clipboard.read` `clipboard.write` |
+| `windows_screen` | `screen.capture` `screen.get` `screen.elements.find` |
+| `windows_shell` | `script.shell` |
+| `windows_ghost` | `ghost.context` `ghost.click`（另有 30 个 `ghost.*` 在工具表里） |
+| `windows_calendar` / `_contacts` / `_reminders` / `_notes` / `_mail` / `_outlook` | 各自的 list/read/create |
+| `windows_battery` / `_system` / `_device` / `_location` | `battery.get` `system.get` `system.apps.list` `location.get` |
+
+### 19.5 一条判据教训
+
+我第一次测「shell 能不能读到 D: 盘」时判的是 `text.slice(0, 130)` 里有没有目录名，
+得出「❌ 没读到」——**是假的**。它把输出放在回复中段，前 130 字符是解释。
+**验证长输出时要查全文，不能截断后判。**
