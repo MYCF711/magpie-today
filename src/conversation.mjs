@@ -51,6 +51,8 @@ export async function createConversation(client) {
     headers: { "Idempotency-Key": IDEMPOTENCY() },
     // 不要传 body：传 `{}` 也会 400（服务端把空对象当成非法入参）
     timeout: 20_000,
+    // 幂等（Idempotency-Key）⇒ 可以重试。上游 5xx 是偶发的。
+    retry: { attempts: 3, delayMs: 500 },
   })
   if (!res.ok) {
     const err = new Error(`创建会话失败：HTTP ${res.status} ${JSON.stringify(res.json ?? res.text).slice(0, 160)}`)
@@ -79,6 +81,8 @@ export async function sendToConversation(client, conversationId, text) {
       bodyType: "text",
       body: { text },
     },
+    // clientMessageId 就是去重键（响应里有 isDuplicate），重发不会产生两条。
+    retry: { attempts: 3, delayMs: 500 },
   })
   if (!res.ok) {
     const err = new Error(`发送失败：HTTP ${res.status} ${JSON.stringify(res.json ?? res.text).slice(0, 160)}`)
@@ -99,7 +103,7 @@ export async function sendToConversation(client, conversationId, text) {
 export async function listConversationMessages(client, conversationId, { limit = 60 } = {}) {
   const res = await client.request(
     `/v2/messages?conversationId=${encodeURIComponent(conversationId)}&limit=${limit}`,
-    { timeout: 30_000 },
+    { timeout: 30_000, retry: { attempts: 2, delayMs: 400 } },
   )
   if (res.status === 401 || res.status === 403) {
     const err = new Error("登录已失效")
@@ -166,7 +170,9 @@ export async function waitForChanges(client, conversationId, { afterSequence = 0
   const res = await client.request(
     `/v3/conversations/${encodeURIComponent(conversationId)}/message-changes` +
       `?afterSequence=${afterSequence}&limit=${limit}&waitMs=${waitMs}`,
-    { timeout: waitMs + 15_000 },
+    // 长轮询本来就要挂 waitMs，重试一次最多再加一个 waitMs；给 2 次而不是 3 次，
+    // 免得一次抖动把整轮拖到分钟级。streamTurn 里还有"失败就退回普通轮询"的兜底。
+    { timeout: waitMs + 15_000, retry: { attempts: 2, delayMs: 300 } },
   )
   if (res.status === 401 || res.status === 403) {
     const err = new Error("登录已失效")

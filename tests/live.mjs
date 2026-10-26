@@ -174,6 +174,30 @@ await t("分流尊重 tool_choice", async () => {
   return "默认分流 / 被点名时不分流"
 })
 
+await t("5xx 有界重试", async () => {
+  const { createClient } = await import("../src/api.mjs")
+  const run = async (seq) => {
+    let calls = 0
+    const c = createClient({
+      getAuth: async () => ({ access: "t" }), deviceId: "d",
+      fetchImpl: async () => {
+        const s = seq[Math.min(calls, seq.length - 1)]; calls++
+        return new Response(JSON.stringify({}), { status: s })
+      },
+    })
+    const r = await c.request("/x", { method: "POST", body: {}, retry: { attempts: 3, delayMs: 5 } })
+    return { status: r.status, calls }
+  }
+  assert.deepEqual(await run([200]), { status: 200, calls: 1 }, "200 不该重试")
+  assert.deepEqual(await run([503, 200]), { status: 200, calls: 2 }, "503 后应重试")
+  assert.deepEqual(await run([503, 503, 200]), { status: 200, calls: 3 }, "两次 503 后第三次成功")
+  assert.deepEqual(await run([400]), { status: 400, calls: 1 }, "4xx 不该重试")
+  const give = await run([503, 503, 503, 503])
+  assert.equal(give.status, 503, "重试次数用尽后如实返回 5xx")
+  assert.equal(give.calls, 3, `最多试 attempts 次，实际 ${give.calls}`)
+  return "5xx 重试、4xx 不重试、次数有上限"
+})
+
 await t("过滤进度气泡", async () => {
   const { readTurn } = await import("../src/conversation.mjs")
   // 形状照抄实测：一条 assistant 里既有 turn 气泡又有 text 正文

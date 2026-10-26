@@ -78,9 +78,21 @@ export function jwtExpiry(token) {
   }
 }
 
-/** 一个带 token 的小客户端。`getToken` 每次都重新取，好让 refresh 生效。 */
+/**
+ * 一个带 token 的小客户端。`getToken` 每次都重新取，好让 refresh 生效。
+ *
+ * `retry` 只对**幂等**的调用生效，靠调用方自己保证：本项目的两个写操作都有去重键
+ * （`POST /v3/conversations` 用 `Idempotency-Key`，`POST /v3/messages` 用
+ * `clientMessageId` 且响应里有 `isDuplicate`），所以重发不会产生两条。
+ *
+ * 为什么要重试：实测上游的 500/503 是**偶发**的（同一个尺寸连试 4 次全是 500 属于尺寸问题，
+ * 但正常尺寸下也会零星出现），一次抖动就让整轮对话失败，体验上不可接受。
+ * 只重试 5xx 与网络错误 —— 4xx 重试没有意义（参数或权限错了，重发还是错）。
+ */
 export function createClient({ getAuth, deviceId, fetchImpl = fetch }) {
-  async function request(pathname, { method = "GET", body, headers, timeout = 30_000 } = {}) {
+  async function once(pathname, { method, body, headers, timeout }) {
+    method ??= "GET"
+    timeout ??= 30_000
     const auth = await getAuth()
     const token = typeof auth === "string" ? auth : auth?.access
     if (!token) throw new Error("Today 未登录")
@@ -101,6 +113,32 @@ export function createClient({ getAuth, deviceId, fetchImpl = fetch }) {
     }
     return { status: res.status, ok: res.ok, json, text }
   }
+
+  /**
+   * `retry: { attempts, delayMs }` —— 只给幂等调用用。
+   * 不传就是一次，行为与之前完全一致。
+   */
+  async function request(pathname, opts = {}) {
+    const { retry } = opts
+    const attempts = Math.max(1, Number(retry?.attempts) || 1)
+    const delayMs = Math.max(0, Number(retry?.delayMs) || 400)
+    let last = null
+    for (let i = 0; i < attempts; i++) {
+      try {
+        last = await once(pathname, { method: opts.method, body: opts.body, headers: opts.headers, timeout: opts.timeout })
+      } catch (e) {
+        // 网络层错误（超时、连接被断）也算可重试
+        if (i === attempts - 1) throw e
+        await new Promise((r) => setTimeout(r, delayMs * (i + 1)))
+        continue
+      }
+      const retriable = last.status >= 500 && last.status !== 501
+      if (!retriable || i === attempts - 1) return last
+      await new Promise((r) => setTimeout(r, delayMs * (i + 1)))
+    }
+    return last
+  }
+
   return { request }
 }
 
