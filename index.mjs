@@ -45,9 +45,11 @@ import {
 } from "./src/constants.mjs"
 import { createClient, describeError, exchangeSession } from "./src/api.mjs"
 import { deviceId as persistentDeviceId } from "./src/device.mjs"
+import { conversationHead, createConversationPool } from "./src/conversationpool.mjs"
+import { createConversation, listConversationMessages, messageCount, sendToConversation } from "./src/conversation.mjs"
 import { sendOtp, verifyOtp } from "./src/login.mjs"
 import { desktopInstalled, readDesktopCredential } from "./src/desktop.mjs"
-import { buildPrompt, extractToolCalls, startTurn, streamTurn } from "./src/chat.mjs"
+import { buildPrompt, delegatedNames, extractToolCalls, streamTurn } from "./src/chat.mjs"
 import { errorResponse, nonStreamResponse, streamResponse } from "./src/openai.mjs"
 import { resolveOptionId, staticModels } from "./src/models.mjs"
 
@@ -116,6 +118,23 @@ async function stripPersona(api, backupDir) {
     timeout: 20_000,
   })
   return { changed: r.ok, backup: r.ok ? file : null }
+}
+
+/**
+ * 每账号一个会话池：每个调用方对话对应 Today 里一个**隔离**的 conversation。
+ *
+ * 为什么不是 thread：`POST /v1/messages` 忽略 body.threadId（每次都新建 thread），
+ * 而所有 thread 共享同一个 conversation ⇒ 请求之间会串味。
+ * 正解是 `POST /v3/conversations` 预定隔离会话。踩坑全过程见 src/conversation.mjs。
+ */
+const pools = new Map()
+function poolFor(accountKey) {
+  let p = pools.get(accountKey)
+  if (!p) {
+    p = createConversationPool()
+    pools.set(accountKey, p)
+  }
+  return p
 }
 
 /** 人设处理的选择项，三条登录路径共用。 */
@@ -383,38 +402,85 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               }
             }
 
-            // ── 组装并投递 ──
+            // ── 组装并投递（线程复用）──
             const tools = Array.isArray(body.tools) ? body.tools : []
-            const knownNames = new Set(
-              tools.map((t) => t?.function?.name ?? t?.name).filter((n) => typeof n === "string"),
-            )
-            const prompt = buildPrompt(body.messages, { tools, toolChoice: body.tool_choice })
-            if (!prompt.trim()) {
-              return errorResponse(400, "没有可发送的内容", "invalid_request_error")
+            // 只有「Today 自己做不了、要委托给调用方」的工具才允许出现在 tool_calls 里。
+            // 网页抓取/搜索这类 Today 原生就会做，它们不进协议、也不该被当成函数返回。
+            const knownNames = delegatedNames(tools)
+
+            const messages = Array.isArray(body.messages) ? body.messages : []
+            const pool = poolFor(acctKey)
+            // 对话头 = 模型 + 工具清单 + 系统提示词 + 第一条用户消息。
+            // 用「头 + 水位线」而不是「全史指纹」：后者会让工具结果回合漏命中，
+            // 那一回合的历史比上一轮多了一条 assistant(tool_calls)。
+            const head = conversationHead(messages, { model: wantOption ?? "", tools })
+
+            const slot = await pool.acquire(head, messages)
+            let conversationId = null
+            let afterCount = 0
+            let sent = 0
+            // 本轮实际上游收到的文本（估算用量要用它）
+            let promptText = ""
+
+            if (slot) {
+              // 续用：只发 Today 会话还不认识的那几条
+              conversationId = slot.conversationId
+              sent = slot.sent
+              const incremental = buildPrompt(messages.slice(sent), {})
+              promptText = incremental
+              try {
+                if (incremental.trim()) {
+                  const rows = await listConversationMessages(api, conversationId, { limit: 60 })
+                  afterCount = messageCount(rows)
+                  await sendToConversation(api, conversationId, incremental)
+                }
+              } catch (e) {
+                // 会话可能已过期/作废：忘了它，退回新建
+                pool.forgetConversation(conversationId)
+                warn(`续用会话失败（${String(e?.message ?? e)}），改为新建`)
+                conversationId = null
+                sent = 0
+              } finally {
+                slot.release()
+              }
             }
 
-            let turn
-            try {
-              turn = await startTurn(api, prompt)
-            } catch (e) {
-              const status = Number(e?.status) || 502
-              if (status === 413) {
-                return errorResponse(
-                  413,
-                  "内容太大（单条消息上限约 17 万字符），请缩短后重试",
-                  "invalid_request_error",
-                )
+            if (!conversationId) {
+              const prompt = buildPrompt(messages, { tools, toolChoice: body.tool_choice })
+              promptText = prompt
+              if (!prompt.trim()) {
+                return errorResponse(400, "没有可发送的内容", "invalid_request_error")
               }
-              if (status === 401 || status === 403) {
-                return errorResponse(401, "登录已失效，请重新登录", "authentication_error")
+              try {
+                const conv = await createConversation(api)
+                conversationId = conv.conversationId
+                await sendToConversation(api, conversationId, prompt)
+                // 新会话：上游此刻只知道这一条，水位线是 0
+                afterCount = 0
+              } catch (e) {
+                const status = Number(e?.status) || 502
+                if (status === 413) {
+                  return errorResponse(
+                    413,
+                    "内容太大（单条消息上限约 17 万字符），请缩短后重试",
+                    "invalid_request_error",
+                  )
+                }
+                if (status === 401 || status === 403) {
+                  return errorResponse(401, "登录已失效，请重新登录", "authentication_error")
+                }
+                return errorResponse(502, String(e?.message ?? e))
               }
-              return errorResponse(502, String(e?.message ?? e))
             }
+
+            // 投递成功：这个 Today 会话现在认识了 messages 的前 messages.length 条
+            pool.remember(head, conversationId, messages)
+            const convId = conversationId
 
             const modelId = resolveOptionId(body.model)
               ? String(body.model).split("/").pop()
               : MODEL_OPTIONS[0].id
-            const source = () => streamTurn(api, turn.threadId, { signal: init?.signal })
+            const source = () => streamTurn(api, convId, { afterCount, signal: init?.signal })
 
             if (body.stream === false) {
               try {
@@ -423,7 +489,12 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                   if (ev.type === "done") text = ev.text ?? text
                 }
                 const calls = knownNames.size ? extractToolCalls(text, knownNames) : null
-                return nonStreamResponse({ modelId, text: calls ? "" : text, toolCalls: calls })
+                return nonStreamResponse({
+                  modelId,
+                  text: calls ? "" : text,
+                  toolCalls: calls,
+                  promptText,
+                })
               } catch (e) {
                 if (e?.signIn) {
                   return errorResponse(401, "登录已失效，请重新登录", "authentication_error")
@@ -432,7 +503,13 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               }
             }
 
-            return streamResponse({ modelId, source: source(), knownNames })
+            return streamResponse({
+              modelId,
+              source: source(),
+              knownNames,
+              promptText,
+              includeUsage: body.stream_options?.include_usage === true,
+            })
           },
         }
       },

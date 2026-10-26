@@ -312,11 +312,11 @@ Today 的 agent 每轮都会被前置一段**服务端人设**（`GET /v1/agents
 
 | 路径 | 中位 | 口径 |
 |---|---|---|
-| 插件 fetch 直连（不经网关） | **3.27s** | 轮询间隔 250ms 时 |
-| 经 magpie 网关 end-to-end | **3.49s** | 同上 |
-| 流式首字 TTFT | **3.40s** | 同上 |
-| agent 通道地板（自己投递 + 200ms 轮询，不经插件） | **3.31s** | 这是**这条通道**的下限 |
-| 原生 OpenAI 兼容 provider（同机 magpie 直连上游：`officeace/deepseek-v4.1-flash`） | **1.30s** | 作为「直连 API」的对照 |
+| 每轮新会话（建 conversation + 全量提示） | **2.98s** | v3 会话池 + 长轮询，各 4 次 |
+| 同一对话续用（只发增量） | **2.61s** | 同上 |
+| 原生 OpenAI 兼容 provider（同机 magpie 直连上游：`officeace/deepseek-v4.1-flash`） | **0.72s** | 作为「直连 API」的对照 |
+
+（早期版本的数字留档：轮询 700ms 时 4.42s；250ms 时 3.27s；换成长轮询后 2.98s。）
 
 怎么读这三个数：
 
@@ -413,3 +413,150 @@ usage 无桌面端 -> 7 条窗口, plan=Pro
 
 ⚠ 仍然**需要**的：一个 Today 账号（手机号能收短信），或者一份 session token。
 这不是依赖，这是「模型从哪来」。
+
+---
+
+## 十三、正文不增量（所以没有真 token 流）
+
+三个通道都测过，正文都是**一次性**到齐的：
+
+**① REST 50ms 极密轮询**（763 字符的回答）
+```
+长度变化序列（ms, len, final）: [[20325, 763, true]]
+```
+整轮只有一次长度变化 —— 从 0 直接到 763。
+
+**② WebSocket**：连上注册设备（`d_...`）后按 `device.hello` 握手，
+盯 `chat.presentation.updated.v1` 的 `data.working.current.turn.content.text`。
+一条 766 字符的回答，WS 上一共 6 个事件：
+
+```
++0.24s  chat.message_ready.v2          state=completed   msgText=26   （回显用户消息）
++0.41s  chat.presentation.updated.v1   state=-           turnText=0
++0.59s  chat.presentation.updated.v1   state=in_progress turnText=0
++19.56s chat.presentation.updated.v1   state=completed   turnText=0
++19.71s chat.message_ready.v2          state=completed   msgText=766  （终稿一次给全）
+```
+中间那 19 秒里，`turn.content.text` 是**空数组**，没有任何部分正文。
+
+**③ 结论**：Today 的 agent 不在生成过程中吐字。所以本插件只能「等终稿再发」——
+流式是**语义上的**（OpenAI 形状的 SSE），不是**节奏上的**（首字即尾字）。
+
+⇒ 这也是 TTFT 与总耗时基本相等的原因（实测 3.40s vs 3.40s）。任何「把 TTFT 降下来」
+的期待在这条通道上都不成立，除非 Today 改服务端。
+
+---
+
+## 十四、会话：`threadId` 是假的，`conversationId` 才是真的
+
+这一节记录的是**我犯过的错**，因为它的表象极具欺骗性。
+
+### 14.1 先犯的错
+
+`POST /v1/messages` 的请求体里有个 `threadId` 字段（schema 里有，`min(1).optional()`）。
+我把「带着 threadId 再发一条」当成「续同一个 thread」，并据此做了线程池。
+
+实测打脸：
+
+```
+轮1 返回 threadId: 01a1774a-ead7-74ed-…a970
+轮2 请求带 threadId: 01a1774a-ead7-74ed-…a970
+轮2 返回 threadId: 01a1774b-0372-7181-…5960   ← 不一样！
+```
+
+**服务端忽略 `body.threadId`，每次都新建 thread。**
+
+### 14.2 为什么当时误判为「复用成功」
+
+因为那些「复用它还记得上文」的测试**确实通过了**：同一 threadId 第二轮只发增量，
+它能答出第一轮让它记的数字。
+
+真实原因：**所有 thread 都属于同一个 conversation（账号的 Main Chat），上下文是会话级的。**
+thread 只是「一次投递」，conversation 才是上下文的边界。
+
+所以那个测试测到的不是「thread 复用」，而是「同一账号的对话天然连着」。
+这个误判的代价很实在：插件里两个不相关的请求会互相看见对方的内容。
+
+### 14.3 正确的形态
+
+`POST /v3/conversations` 可以**预定一个隔离的会话**：
+
+```
+POST /v3/conversations
+  headers: { Idempotency-Key: <唯一串> }        ← 必须，缺了 400
+  body:    <不发>                              ← 发了 `{}` 也 400
+→ 200 {"data":{"conversation":{"conversationId":"01a1774d-…","expiresAt":"…"}}}
+```
+
+发送、读取：
+
+```
+POST /v3/messages
+  { conversationId, clientMessageId, bodyType:"text", body:{ text } }
+
+GET /v2/messages?conversationId=<id>&limit=40     ← 时间正序、含全部历史
+```
+
+隔离与记忆都实测过：
+
+```
+两个新 conversation，A 说「记住随机串 QXVC78L」
+B 问「出现过以 QXV 开头的字符吗」
+→ B：「没有。上面的内容里没有出现过以 QXV 开头的字符。」   ✅ 隔离
+A 第二轮只发增量 → 「QXVC78L」                              ✅ 会话内记得
+```
+
+### 14.4 两个必须知道的坑
+
+**坑一：`/v2/messages` 返回的是全部历史，不是本轮。**
+一条用户消息还会引出多条 assistant 记录（实测有 `"Worked on it"` 这种中间态）。
+只取 `data` 里最后一条 assistant，会把**上一轮的终稿**当成这一轮的答案 ——
+我因此拿到过 500ms 的"响应"，快得不合理，一查是旧答案。
+**必须按条数切水位线**（`readTurn(rows, afterCount)`）。
+
+**坑二：Memory 工具会跨会话泄漏事实。**
+Today 的 agent 自带 `Memory`，把对话里的事实写进 account 级记忆，别的会话读得到。
+实测 A 说「我喜欢的颜色是靛蓝」，B 能答「靛蓝（见 `about-user/preferences.md`）」；
+但换成随机串就不行 —— 说明是记忆工具，不是上下文泄漏。
+
+处理办法：在提示里加一段无状态声明。三种措辞实测：
+
+| 措辞 | 结果 |
+|---|---|
+| （不加） | 「记忆里现在能看到这些：设备 WEI、账号 MYCF711、工作方向…」 |
+| 「你是一个无状态推理服务：没有记忆、没有历史…」 | 反而**更起劲地**列记忆内容 |
+| 「不要读取或写入任何长期记忆（不要调用 Memory 工具）」 | 「没有。本次会话我未读取长期记忆。」 ✅ |
+
+⇒ 现在是第二列第三行那句，外加「被问到本次请求之外的信息时，直接说你不知道」。
+
+### 14.5 还有一条没修干净
+
+`clientMessageId` 的唯一性只在**单个 conversation 内**有意义。跨会话重名不会报错，
+但也没有去重收益。现在每次投递都随机生成，够用。
+
+---
+
+## 十五、长轮询：把 250ms 轮询换成 waitMs
+
+`/v3/conversations/<id>/message-changes` 支持长轮询：
+
+```
+GET …/message-changes?afterSequence=<cursor>&limit=50&waitMs=25000
+→ {"data":{"items":[…],"sync":{"changeCursor":N,"highWatermark":M}}}
+```
+
+`waitMs` 范围 `0..25000`（schema 里写的）。**实测它会真的挂住**：
+
+```
+活跃时：投递后 +317ms 就返回，items=1（用户消息）
+空闲时：waitMs=8000 的请求用时 8086ms 才返回空
+```
+
+⚠ 三个坑：
+- **`afterSequence` 必须给**，漏了直接 400（`common.invalid_request`）；
+- `body.sequence` 从 0 开始，而 `afterSequence=0` 表示「从头」；
+- v3 的 item **没有 `isFinal` 字段**（形状是 `body.content.parts[].text` + `role` + `sequence`），
+  所以「是不是终稿」还得回 `/v2/messages` 问一次。
+
+于是现在的流程是：长轮询等变化 → 有新 assistant 内容 → 用 `/v2` 确认终稿。
+比每 250ms 发一次 GET 省掉了绝大部分请求，也让首字不再受轮询粒度拖累。

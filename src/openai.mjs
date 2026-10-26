@@ -3,10 +3,14 @@
 // magpie 只要求插件返回一个 Response；形状对不对由 `@ai-sdk/openai-compatible` 决定。
 // 非流式要 chat.completion，流式要 SSE（每行 `data: {...}`，结尾 `data: [DONE]`）。
 //
-// ⚠ 流式的分帧要自己造：Today 只在终稿时才给完整正文，中间态只是长度增长。
-//   所以这里把增量直接转成 OpenAI 的 delta，不攒批、不重排。
+// ⚠ 流式的分帧要自己造：Today 只在终稿时才给完整正文（实测见 docs/internals.md
+//   第十三节），中间态不携带文本。所以这里把拿到的增量直接转成 OpenAI 的 delta，
+//   不攒批、不重排 —— 服务端将来真开始分片时不用改这里。
+//
+// ⚠ usage 是**估算**（上游不回报 token）。见 src/tokens.mjs 的口径说明。
 
-import { argumentsString, newCallId } from "./chat.mjs"
+import { argumentsString, extractToolCalls, newCallId } from "./chat.mjs"
+import { estimateUsage } from "./tokens.mjs"
 
 function id() {
   return `chatcmpl-${Math.random().toString(36).slice(2, 12)}`
@@ -22,8 +26,9 @@ function toOpenAIToolCalls(calls) {
 }
 
 /** 非流式响应。 */
-export function nonStreamResponse({ modelId, text, toolCalls, created }) {
+export function nonStreamResponse({ modelId, text, toolCalls, created, promptText, usage }) {
   const hasTools = Array.isArray(toolCalls) && toolCalls.length > 0
+  const content = hasTools ? (text ? text : null) : (text ?? "")
   const payload = {
     id: id(),
     object: "chat.completion",
@@ -35,15 +40,13 @@ export function nonStreamResponse({ modelId, text, toolCalls, created }) {
         message: {
           role: "assistant",
           // 纯工具调用时 content 必须是 null（OpenAI 规范），不能是空串
-          content: hasTools ? (text ? text : null) : (text ?? ""),
+          content,
           ...(hasTools ? { tool_calls: toOpenAIToolCalls(toolCalls) } : {}),
         },
         finish_reason: hasTools ? "tool_calls" : "stop",
       },
     ],
-    // agent 通道不回报 token 用量。给 0 而不是编一个数：
-    // 编出来的数字会被上层当真，0 至少不会被拿去算钱。
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    usage: usage ?? estimateUsage({ promptText, completionText: content ?? "" }),
   }
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -52,7 +55,7 @@ export function nonStreamResponse({ modelId, text, toolCalls, created }) {
 }
 
 /** SSE 响应。`source` 是一个异步生成器，产出 `{type:"delta",text}` / `{type:"done",text}`。 */
-export function streamResponse({ modelId, source, knownNames }) {
+export function streamResponse({ modelId, source, knownNames, promptText, includeUsage = false }) {
   const created = Math.floor(Date.now() / 1000)
   const responseId = id()
   const encoder = new TextEncoder()
@@ -74,19 +77,20 @@ export function streamResponse({ modelId, source, knownNames }) {
 
       try {
         let full = ""
+        let streamed = ""
         for await (const ev of source) {
           if (ev.type === "delta" && ev.text) {
-            // 工具调用是被「文本协议」模拟的：正文里可能出现那个 JSON。
-            // 但它只在最后一次性给全，所以中途照常当文本流出去；
-            // 到 done 时若判定为工具调用，再补发 tool_calls 帧。
             full += ev.text
+            streamed += ev.text
             frame({ content: ev.text })
           } else if (ev.type === "done") {
             full = ev.text ?? full
           }
         }
 
-        const { extractToolCalls } = await import("./chat.mjs")
+        // 工具调用是被「文本协议」模拟的：正文里可能出现那个 JSON。它一次性给全，
+        // 所以中途已经当文本流出去了。判定为工具调用时补发 tool_calls 帧，
+        // 并把已经流出去的那段正文「收回」—— OpenAI 的语义是 content=null。
         const calls = knownNames?.size ? extractToolCalls(full, knownNames) : null
         if (calls) {
           const openai = toOpenAIToolCalls(calls)
@@ -106,7 +110,22 @@ export function streamResponse({ modelId, source, knownNames }) {
         } else {
           frame({}, "stop")
         }
+
+        // 用量帧：OpenAI 只在 stream_options.include_usage 时才发，形状是 choices 为空。
+        // 不发就不用发 —— 但发了必须按规范发，否则客户端会把 choices:[] 当成异常。
+        if (includeUsage) {
+          send({
+            id: responseId,
+            object: "chat.completion.chunk",
+            created,
+            model: modelId,
+            choices: [],
+            usage: estimateUsage({ promptText, completionText: calls ? "" : full }),
+          })
+        }
+
         controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+        void streamed
       } catch (e) {
         send({ error: { type: "api_error", message: String(e?.message ?? e) } })
       } finally {

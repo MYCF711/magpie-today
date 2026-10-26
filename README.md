@@ -7,6 +7,8 @@
 登录      手机号 + 验证码，不需要桌面端
 额度      套餐用量（Pro，5 个维度分项）
 上下文    实测 16 万字符以上可容纳（载荷上限 ~17 万字符）
+多轮      Today 的会话里续着走，第 2 轮起只发增量（实测中位 2.6s vs 新建 3.0s）
+并发      两个不同对话可并行，实测不串线
 ```
 
 **独立运行**：不依赖 Today 桌面端。登录走 Today 自己的手机验证码接口，
@@ -14,10 +16,36 @@
 装了桌面端的人可以改用「一键导入」少填一次验证码，但那是可选项。
 
 Today 是一个 agent 产品，**没有 chat/completions 端点**。它的模型只能通过 agent 会话访问：
-`POST /v1/messages` 投递 → 回复走 WebSocket（或 `GET /v2/messages` 轮询）。
-本插件把这条 agent 通道翻译成 OpenAI Chat Completions 形状，包括流式与函数调用。
+
+```
+POST /v3/conversations            → 预定一个隔离会话
+POST /v3/messages                 → 往会话里追加一条用户消息
+GET  /v3/…/message-changes?waitMs → 长轮询，有新内容立刻回
+GET  /v2/messages?conversationId= → 确认终稿
+```
+
+本插件把这条 agent 通道翻译成 OpenAI Chat Completions 形状。
 
 非官方插件，与 TODAY AI PTE. LTD. 无关。
+
+---
+
+## 三条实测出来的硬约束
+
+写在这里是因为它们**改变了这个插件的能力边界**，用户应该先知道：
+
+**① 没有真 token 流。** Today 的 agent 不在生成过程中吐字 —— 50ms 极密轮询下正文
+一次到齐（20.3 秒处 763 字符一次给全），WebSocket 的 `presentation` 事件里
+`turn.content.text` 恒为空数组。所以 SSE 是**语义上**的流式（形状对、客户端能正常解析），
+不是**节奏上**的流式：首字时间 ≈ 总耗时。数据见 [docs/internals.md](docs/internals.md) 第十三节。
+
+**② 每个调用方对话会占用 Today 里一个会话。** 插件用 `POST /v3/conversations` 给每个
+独立对话预定一个隔离会话，续聊只发增量。这些会话会出现在你的 Today 里，
+并按 Today 的过期时间回收。
+
+**③ 切模型是账号级操作。** `PUT /v1/pricing/model-option` 改的是账号的全局档位，
+不是单个请求 —— 也就是说，在 DSH 里切到 `today/glm-5.3`，你自己 Today 桌面端里选的模型
+也会跟着变。这是服务端设计，不是插件的选择。
 
 ---
 
@@ -26,7 +54,7 @@ Today 是一个 agent 产品，**没有 chat/completions 端点**。它的模型
 - **手机验证码登录** —— 纯 HTTP，服务器、容器、没装客户端的机器都能用
 - **设备身份自持** —— 插件自己生成 UUID 并持久化，不冒充、不依赖任何客户端
 - **可选的桌面端导入** —— 装了客户端的人一键带走登录态
-- **流式输出** —— 轮询增量转 SSE（实测 WS 只推状态、不推正文，见 docs/internals.md）
+- **流式输出** —— OpenAI 形状的 SSE（⚠ 上游不吐部分正文，见下）
 - **函数调用** —— 走文本协议模拟，`tools` 透传、`tool_calls` 按 OpenAI 格式返回
 - **模型切换** —— 两个档位，按请求里的 `model` 自动切（服务端是账号级设置）
 - **额度准** —— 套餐用量与到期时间都来自 `/v1/pricing/status`

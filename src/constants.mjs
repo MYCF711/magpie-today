@@ -83,4 +83,16 @@ export const TURN_TIMEOUT_MS = 300_000
 /** 轮询兜底的间隔。WS 断掉时靠它收尾。 */
 export const POLL_INTERVAL_MS = 250
 
+/**
+ * 长轮询单次挂起时长（毫秒）。
+ *
+ * `/v3/conversations/<id>/message-changes?waitMs=` 实测**会真的挂住**：
+ * 空闲时发一个 waitMs=8000 的请求，它等满了 8086ms 才返回空。
+ * 于是正文一到就能立刻回来，不用按固定间隔反复问。
+ *
+ * 取 20000 是折中：再长一点会更省请求，但一条请求挂太久，
+ * 中途的连接抖动会拖累整轮（重连要重新算 cursor）。
+ */
+export const LONGPOLL_WAIT_MS = 20_000
+
 export const USER_AGENT = "node"

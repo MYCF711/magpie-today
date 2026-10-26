@@ -20,7 +20,8 @@ import assert from "node:assert/strict"
 import { readDesktopCredential, desktopDeviceId } from "../src/desktop.mjs"
 import { createClient, exchangeSession } from "../src/api.mjs"
 import { TodayAuthPlugin, _internal } from "../index.mjs"
-import { buildPrompt, extractToolCalls, startTurn, streamTurn } from "../src/chat.mjs"
+import { buildPrompt, extractToolCalls, streamTurn } from "../src/chat.mjs"
+import { createConversation, listConversationMessages, messageCount, sendToConversation } from "../src/conversation.mjs"
 import { staticModels } from "../src/models.mjs"
 
 const want = process.argv[2]
@@ -155,10 +156,11 @@ await t("chat", async () => {
   const prompt = buildPrompt([
     { role: "user", content: "只回复三个字：收到了" },
   ])
-  const turn = await startTurn(api, prompt)
+  const conv = await createConversation(api)
+  await sendToConversation(api, conv.conversationId, prompt)
   let text = ""
   const t0 = Date.now()
-  for await (const ev of streamTurn(api, turn.threadId)) {
+  for await (const ev of streamTurn(api, conv.conversationId, { afterCount: 0 })) {
     if (ev.type === "done") text = ev.text ?? text
   }
   assert.ok(text.trim().length > 0, "回复不应为空")
@@ -183,9 +185,10 @@ await t("tools", async () => {
     { tools },
   )
   assert.ok(prompt.includes("read_file"), "工具表应进提示")
-  const turn = await startTurn(api, prompt)
+  const conv = await createConversation(api)
+  await sendToConversation(api, conv.conversationId, prompt)
   let text = ""
-  for await (const ev of streamTurn(api, turn.threadId)) {
+  for await (const ev of streamTurn(api, conv.conversationId, { afterCount: 0 })) {
     if (ev.type === "done") text = ev.text ?? text
   }
   const calls = extractToolCalls(text, new Set(["read_file"]))

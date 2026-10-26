@@ -1,14 +1,16 @@
 // loader.fetch 的形状自测：走真实 agent 通道，检查 OpenAI 形状是否合规范。
 //   node tests/fetch.mjs
 import assert from "node:assert/strict"
-import { readDesktopCredential, desktopDeviceId } from "../src/desktop.mjs"
+import { readDesktopCredential } from "../src/desktop.mjs"
+import { deviceId as persistentDeviceId } from "../src/device.mjs"
 import { exchangeSession } from "../src/api.mjs"
 import { TodayAuthPlugin } from "../index.mjs"
 
 const cred = readDesktopCredential()
 if (!cred) { console.error("没有桌面端登录态"); process.exit(2) }
-const { accessToken, expiresAt } = await exchangeSession(cred.refreshCredential, desktopDeviceId())
-const auth = { access: accessToken, refresh: cred.refreshCredential, expires: expiresAt, accountId: cred.userId, uid: cred.userId, type: "oauth" }
+const DEV = persistentDeviceId(process.cwd())
+const { accessToken, expiresAt } = await exchangeSession(cred.refreshCredential, DEV)
+const auth = { access: accessToken, refresh: cred.refreshCredential, expires: expiresAt, accountId: cred.userId, uid: cred.userId, deviceId: DEV, type: "oauth" }
 const getAuth = async () => auth
 
 const plugin = await TodayAuthPlugin({ client: { app: { log: (m) => console.log("  [log]", m.message) } }, directory: process.cwd() }, {})
