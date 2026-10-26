@@ -94,7 +94,7 @@ export async function sendToConversation(client, conversationId, text) {
  * 读一个会话的全部消息（按时间正序）。
  *
  * `limit` 上限 100；超出的场景（长对话）目前不翻页 —— Today 的对话一般不会到那儿，
- * 真到了会先撞上 17 万字符的载荷上限。
+ * 真到了会先撞上上游的载荷上限（见 constants.mjs 的矩阵）。
  */
 export async function listConversationMessages(client, conversationId, { limit = 60 } = {}) {
   const res = await client.request(

@@ -113,7 +113,7 @@ export function describeError(status, json, text) {
     if (String(code).startsWith("auth.") || status === 401) return "登录已失效，请重新登录"
     return message || "这个账号没有该接口的权限"
   }
-  if (status === 413) return "内容太大（单条消息上限约 17 万字符），请缩短后重试"
+  if (status === 413) return "内容太大（上游限制：单条正文最多 100 万字符，且整个请求体不超过 1 MiB），请缩短后重试"
   if (status === 429) return message || "请求太频繁，稍后重试"
   return message || code || text?.slice(0, 200) || `HTTP ${status}`
 }

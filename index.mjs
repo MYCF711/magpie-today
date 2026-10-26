@@ -466,7 +466,7 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                 if (status === 413) {
                   return errorResponse(
                     413,
-                    "内容太大（单条消息上限约 17 万字符），请缩短后重试",
+                    "内容太大（上游限制：单条正文最多 100 万字符，且整个请求体不超过 1 MiB），请缩短后重试",
                     "invalid_request_error",
                   )
                 }
