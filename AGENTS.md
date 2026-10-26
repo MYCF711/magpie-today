@@ -69,8 +69,9 @@ node tests/gateway.mjs                                 # 经网关验收
   assistant 记录（有 `"Worked on it"` 这类中间态）。只取最后一条 assistant 会把**上一轮的终稿**
   当成这一轮的答案 —— 必须按条数切水位线（`readTurn(rows, afterCount)`）。
 - **长轮询的参数是 `afterSequence`**，漏了直接 400；`waitMs` 上限 25000。
-- **Today 的 agent 自带 Memory 工具**，会把对话里的事实写进 account 级记忆，别的会话读得到。
-  提示里的「无状态声明」是压住它的那句，措辞换过就不灵（见 docs/internals.md 第十四节）。
+- **Today 的 agent 自带 Memory 工具**，account 级，跨会话可见。**默认已放开**（按主人指示，
+  记忆是它的既有能力，压制等于砍功能）。要恢复压制：设 `TODAY_NO_MEMORY=1`。
+  那条压制语句的措辞是实测过的，换法就不灵（见 docs/internals.md 第十四节）。
 
 ## 目录约定
 - `src/` 一个关注点一个文件；`index.mjs` 只做九项钩子的装配，不放实现。
