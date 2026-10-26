@@ -210,6 +210,28 @@ await t("5xx 有界重试", async () => {
   return "5xx 重试、4xx 不重试、次数有上限"
 })
 
+await t("Memory 开关生效", async () => {
+  const { buildPrompt } = await import("../src/chat.mjs")
+  const msgs = [{ role: "system", content: "你是助手" }, { role: "user", content: "hi" }]
+  delete process.env.TODAY_NO_MEMORY
+  const on = buildPrompt(msgs)
+  assert.ok(!on.includes("无状态推理服务"), "默认该放开记忆（不含压制语句）")
+  process.env.TODAY_NO_MEMORY = "1"
+  const off = buildPrompt(msgs)
+  assert.ok(off.includes("无状态推理服务"), "TODAY_NO_MEMORY=1 时应注入压制语句")
+  delete process.env.TODAY_NO_MEMORY
+  return "默认放开 / 开关可压制（量上下文时必须关）"
+})
+
+await t("图像输入支持两种 content 形状", async () => {
+  const { collectImageUrlsFlexible } = await import("../src/files.mjs")
+  const url = "data:image/png;base64,AAA"
+  const asMessages = [{ role: "user", content: [{ type: "image_url", image_url: { url } }] }]
+  assert.deepEqual(collectImageUrlsFlexible(asMessages), [url])
+  assert.deepEqual(collectImageUrlsFlexible(asMessages[0].content), [url])
+  return "messages 与 content 都行"
+})
+
 await t("过滤进度气泡", async () => {
   const { readTurn } = await import("../src/conversation.mjs")
   // 形状照抄实测：一条 assistant 里既有 turn 气泡又有 text 正文
