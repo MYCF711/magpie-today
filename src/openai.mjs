@@ -11,6 +11,7 @@
 
 import { argumentsString, extractToolCalls, newCallId } from "./chat.mjs"
 import { constrainOutput } from "./params.mjs"
+import { parseTemplate, templateToolNames } from "./template.mjs"
 import { estimateUsage } from "./tokens.mjs"
 
 function id() {
@@ -27,7 +28,7 @@ function toOpenAIToolCalls(calls) {
 }
 
 /** 非流式响应。 */
-export function nonStreamResponse({ modelId, text, toolCalls, created, promptText, usage }) {
+export function nonStreamResponse({ modelId, text, toolCalls, created, promptText, usage, agentToolCalls, reasoning, debugTools }) {
   const hasTools = Array.isArray(toolCalls) && toolCalls.length > 0
   const content = hasTools ? (text ? text : null) : (text ?? "")
   const payload = {
@@ -42,12 +43,23 @@ export function nonStreamResponse({ modelId, text, toolCalls, created, promptTex
           role: "assistant",
           // 纯工具调用时 content 必须是 null（OpenAI 规范），不能是空串
           content,
+          // ★ 思考过程 ★ DSH 认这三个字段之一（推理见 src/reasoning.mjs 顶部注释）
+          ...(reasoning ? { reasoning_content: reasoning } : {}),
           ...(hasTools ? { tool_calls: toOpenAIToolCalls(toolCalls) } : {}),
         },
         finish_reason: hasTools ? "tool_calls" : "stop",
       },
     ],
     usage: usage ?? estimateUsage({ promptText, completionText: content ?? "" }),
+    ...(debugTools !== undefined ? { today_debug_tools: debugTools } : {}),
+    // ★ 它自己执行过的工具调用（不是"请求你执行"）★
+    //
+    // 别和 `message.tool_calls` 混：那个的语义是「调用方去执行，然后把结果回灌」。
+    // 这里的调用**已经在服务端跑完了**，调用方只需展示，不需要执行。
+    // 混用会让 DSH 以为要它去跑一个已经跑完的工具，那是错误的行为。
+    ...(Array.isArray(agentToolCalls) && agentToolCalls.length
+      ? { today_agent_tool_calls: agentToolCalls }
+      : {}),
   }
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -56,7 +68,7 @@ export function nonStreamResponse({ modelId, text, toolCalls, created, promptTex
 }
 
 /** SSE 响应。`source` 是一个异步生成器，产出 `{type:"delta",text}` / `{type:"done",text}`。 */
-export function streamResponse({ modelId, source, knownNames, promptText, includeUsage = false, requestBody = {} }) {
+export function streamResponse({ modelId, source, knownNames, promptText, includeUsage = false, requestBody = {}, onDone, tools = [], receivedTools }) {
   const created = Math.floor(Date.now() / 1000)
   const responseId = id()
   const encoder = new TextEncoder()
@@ -89,6 +101,7 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
             full += ev.text
           } else if (ev.type === "done") {
             full = ev.text ?? full
+            if (typeof onDone === "function") onDone(ev)
           }
         }
         const streamed = ""
@@ -97,13 +110,17 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
         // 所以中途已经当文本流出去了。判定为工具调用时补发 tool_calls 帧，
         // 并把已经流出去的那段正文「收回」—— OpenAI 的语义是 content=null。
         // stop / max_tokens：上游不认，本地落实。
-        // ⚠ 流式下正文已经一帧帧发出去了，这里只能影响**收尾的 usage 估算**；
-        //   要真正截断得在发帧之前做。所以流式路径的 stop 是"尽力而为"：
-        //   上游本来就一次性给全（不增量），因此下面这段实际能拦住绝大多数情况。
-        const constrained = constrainOutput(full, requestBody)
-        const truncated = constrained !== full
-        full = constrained
-        const calls = knownNames?.size ? extractToolCalls(full, knownNames) : null
+        // ★ 模板解析：一次拿到 reasoning / content / tool_calls ★
+        //
+        // 注意流式现在是「先攒后发」（上游本来也不吐增量），所以 stop / max_tokens
+        // 能在这里真正生效 —— 正文还没发出去，截断不是空话。
+        const parsed = parseTemplate(full, templateToolNames(tools))
+        const constrained = constrainOutput(parsed.content || (parsed.kind === "raw" ? full : ""), requestBody)
+        const calls = parsed.toolCalls ?? (knownNames?.size ? extractToolCalls(constrained, knownNames) : null)
+
+        // 思考过程先发（DSH 认 delta.reasoning_content）
+        if (parsed.reasoning) frame({ reasoning_content: parsed.reasoning })
+
         // 正文在确认过截断之后才发。判定是工具调用时不发正文（OpenAI 的 content 为 null）。
         if (!calls && constrained) frame({ content: constrained })
         if (calls) {
@@ -137,6 +154,7 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
             model: modelId,
             choices: [],
             usage: estimateUsage({ promptText, completionText: calls ? "" : full }),
+            ...(receivedTools !== undefined ? { today_debug_tools: receivedTools } : {}),
           })
         }
 

@@ -51,8 +51,13 @@ const base = {
   assert.ok(lines.length >= 3, `SSE 至少要有 3 帧，实际 ${lines.length}`)
   const frames = lines.filter((l) => !l.includes("[DONE]")).map((l) => JSON.parse(l.slice(6)))
   assert.equal(frames[0].choices[0].delta.role, "assistant")
-  assert.ok(frames[frames.length - 1].choices[0].finish_reason === "stop", "最后一帧应是 stop")
-  const content = frames.map((f) => f.choices[0].delta.content ?? "").join("")
+  // ⚠ 最后一帧可能不是 finish 帧：开了 include_usage 时末尾会多一个 choices:[] 的 usage 帧。
+  //   所以按「有 choices 的帧里找 finish_reason」来判，别取 frames[last]。
+  const withChoices = frames.filter((f) => Array.isArray(f.choices) && f.choices.length > 0)
+  assert.ok(withChoices.length > 0, "至少要有一帧带 choices")
+  const last = withChoices[withChoices.length - 1]
+  assert.ok(last.choices[0].finish_reason === "stop", `最后一帧有 choices 的应是 stop，实际 ${JSON.stringify(last.choices[0].finish_reason)}`)
+  const content = withChoices.map((f) => f.choices[0].delta?.content ?? "").join("")
   assert.ok(content.length > 0, "流式内容不应为空")
   console.log(`流式 ok  ${((Date.now() - t0) / 1000).toFixed(1)}s  ${frames.length} 帧  content=${JSON.stringify(content.slice(0, 40))}`)
 }

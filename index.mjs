@@ -51,6 +51,7 @@ import { sendOtp, verifyOtp } from "./src/login.mjs"
 import { buildPrompt, delegatedNames, extractToolCalls, streamTurn } from "./src/chat.mjs"
 import { attachmentsFor } from "./src/files.mjs"
 import { constrainOutput, unsupportedNotes } from "./src/params.mjs"
+import { parseTemplate, templateToolNames } from "./src/template.mjs"
 import { errorResponse, nonStreamResponse, streamResponse } from "./src/openai.mjs"
 import { resolveOptionId, staticModels } from "./src/models.mjs"
 
@@ -402,7 +403,7 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                   object: "chat.completion",
                   created: Math.floor(Date.now() / 1000),
                   model: "probe",
-                  choices: [{ index: 0, message: { role: "assistant", content: `收到的字段：${Object.keys(body).join(",")}` }, finish_reason: "stop" }],
+                  choices: [{ index: 0, message: { role: "assistant", content: `字段：${Object.keys(body).join(",")}｜tools:${JSON.stringify((body.tools ?? []).map((t) => t?.function?.name ?? t?.name ?? "?"))}` }, finish_reason: "stop" }],
                   usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
                 }),
                 { status: 200, headers: { "content-type": "application/json" } },
@@ -438,6 +439,8 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
 
             // ── 组装并投递（线程复用）──
             const tools = Array.isArray(body.tools) ? body.tools : []
+            // 排障：记下收到的工具形状（只记名字，不记内容）
+            const receivedToolNames = tools.map((t) => t?.function?.name ?? t?.name ?? "?").join(",")
             // 只有「Today 自己做不了、要委托给调用方」的工具才允许出现在 tool_calls 里。
             // 网页抓取/搜索这类 Today 原生就会做，它们不进协议、也不该被当成函数返回。
             const knownNames = delegatedNames(tools)
@@ -537,17 +540,28 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             if (body.stream === false) {
               try {
                 let text = ""
+                let agentToolCalls = []
                 for await (const ev of source()) {
-                  if (ev.type === "done") text = ev.text ?? text
+                  if (ev.type === "done") {
+                    text = ev.text ?? text
+                    agentToolCalls = ev.toolCalls ?? []
+                  }
                 }
-                const calls = knownNames.size ? extractToolCalls(text, knownNames) : null
-                // stop / max_tokens 在本地落实（上游不认这两个字段）
-                const text2 = calls ? "" : constrainOutput(text, body)
+                // ★ 模板解析 ★ 一次拿到 reasoning / content / tool_calls
+                // ⚠ 必须用 delegated 名单（= 模板里列出的那批），不能用全部工具名。
+                //   用全部的话，被分流走的工具（如 web_fetch）仍会被当成合法 tool_call 放过去，
+                //   分流优化就白做了，还多一轮往返。
+                const parsed = parseTemplate(text, knownNames)
+                const calls = parsed.toolCalls ?? (knownNames.size ? extractToolCalls(text, knownNames) : null)
+                const text2 = calls ? "" : constrainOutput(parsed.content || text, body)
                 return nonStreamResponse({
                   modelId,
                   text: text2,
                   toolCalls: calls,
                   promptText,
+                  agentToolCalls,
+                  reasoning: parsed.reasoning,
+                  debugTools: receivedToolNames,
                 })
               } catch (e) {
                 if (e?.signIn) {
@@ -557,6 +571,8 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               }
             }
 
+            // 流式：它自己的工具调用放在收尾帧（自定义字段，客户端不认识就忽略）
+            let agentToolCalls = []
             return streamResponse({
               modelId,
               source: source(),
@@ -564,6 +580,11 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               promptText,
               includeUsage: body.stream_options?.include_usage === true,
               requestBody: body,
+              tools,
+              receivedTools: receivedToolNames,
+              onDone: (ev) => {
+                agentToolCalls = ev.toolCalls ?? []
+              },
             })
           },
         }

@@ -119,10 +119,11 @@ export function nativeNote(native) {
   const names = [...new Set(native.map((n) => n.name))]
   const abilities = [...new Set(native.map((n) => n.note))]
   return [
-    "## 你可以自己完成的动作",
+    "## 你自己就能做的事（重要）",
     "",
-    `下面这几件事你自己就有对应的工具（${abilities.join("、")}）：${names.join("、")}。`,
-    "遇到这类请求，**直接自己做**然后给出结果，不要输出 tool_calls —— ",
-    "调用方那边不需要为它们再跑一轮。",
+    `这几件事你自己就有原生工具（${abilities.join("、")}）：${names.join("、")}。`,
+    "**它们故意没有出现在下面的输出模板里** —— 因为不需要经过调用方。",
+    "遇到这类请求：直接自己做，把结果写进 content；**不要**用 tool_calls 请求它们。",
+    "（用 tool_calls 请求它们虽然也能跑，但会白多一轮往返，也更慢。）",
   ].join("\n")
 }

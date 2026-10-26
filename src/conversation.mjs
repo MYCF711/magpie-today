@@ -163,11 +163,39 @@ export function readTurn(rows, afterCount) {
   //   实测（2026-10-26）：正文永远是 messageType=text，气泡永远是 turn。
   const finals = assistants.filter((m) => m.isFinal === true)
   const pick = finals.length ? finals[finals.length - 1] : assistants[assistants.length - 1]
-  const text = (pick.messages ?? [])
+  const parts = pick.messages ?? []
+  const text = parts
     .filter((p) => (p?.messageType ?? "text") === "text")
     .map((p) => (typeof p?.content?.text === "string" ? p.content.text : ""))
     .join("")
-  return { text, isFinal: pick.isFinal === true, count: list.length }
+  // ★ 它自己做过的事：把工具调用记录摘出来 ★
+  //
+  // ⚠ 两个容易踩错的地方（我都踩过）：
+  //   1. `messageType: "turn"` 的 part 有两种，别一刀切当气泡丢掉：
+  //      · 有 `toolCalls` 数组 → **真实的工具调用**，带 toolName / toolCallId / status / durationMs
+  //      · 没有 → 纯进度文案（`text: ["Searched the web"]`），这种才该丢
+  //   2. **工具调用是独立的一条 assistant 消息**，不和正文在同一个 `messages[]` 里。
+  //      只取最后一条 assistant（正文那条）会漏掉它 —— 必须扫本轮**所有** assistant 消息。
+  //
+  // 直接问过它本人（2026-10-26）：「我发出的工具调用本身是结构化的 —— 工具名 + 参数（JSON 对象）」
+  const toolCalls = []
+  for (const m of tail) {
+    if (m?.role !== "assistant") continue
+    for (const p of m.messages ?? []) {
+      const calls = p?.content?.toolCalls
+      if (!Array.isArray(calls)) continue
+      for (const c of calls) {
+        if (!c?.toolName) continue
+        toolCalls.push({
+          toolName: String(c.toolName),
+          toolCallId: c.toolCallId ? String(c.toolCallId) : undefined,
+          status: c.status ? String(c.status) : undefined,
+          durationMs: Number.isFinite(Number(c.durationMs)) ? Number(c.durationMs) : undefined,
+        })
+      }
+    }
+  }
+  return { text, isFinal: pick.isFinal === true, count: list.length, toolCalls }
 }
 
 /** 消息条数（用于记水位线）。 */

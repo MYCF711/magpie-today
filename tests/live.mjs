@@ -232,6 +232,34 @@ await t("图像输入支持两种 content 形状", async () => {
   return "messages 与 content 都行"
 })
 
+await t("思考过程：模板与解析", async () => {
+  const { outputTemplate, parseTemplate } = await import("../src/template.mjs")
+  const tools = [{ type: "function", function: { name: "read", description: "读", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }]
+  const tpl = outputTemplate(tools)
+  assert.ok(tpl.includes('"kind":"answer|tool_call"'), "模板该含 kind 联合")
+  assert.ok(tpl.includes("reasoning"), "模板该含 reasoning 字段")
+  assert.ok(tpl.includes("read(path"), "模板该列出工具")
+  const KNOWN = new Set(["read"])
+  const a = parseTemplate('{"kind":"answer","reasoning":"简单","content":"2"}', KNOWN)
+  assert.deepEqual([a.kind, a.reasoning, a.content], ["answer", "简单", "2"])
+  const c = parseTemplate('{"kind":"tool_call","reasoning":"要读","tool_calls":[{"name":"read","arguments":{"path":"a"}}]}', KNOWN)
+  assert.equal(c.kind, "tool_call")
+  assert.deepEqual(c.toolCalls, [{ name: "read", arguments: { path: "a" } }])
+  assert.equal(c.reasoning, "要读")
+  // 未知工具不该被放行
+  const u = parseTemplate('{"kind":"tool_call","tool_calls":[{"name":"nope","arguments":{}}]}', KNOWN)
+  assert.equal(u.kind, "raw", "清单外的工具名不该变成 tool_call")
+  // 非 JSON 原文当正文，不许丢
+  const r = parseTemplate("这就是一句普通回答", KNOWN)
+  assert.equal(r.kind, "raw")
+  assert.equal(r.content, "这就是一句普通回答")
+  // 围栏与前后杂字也要能抠出来
+  const fenced = ["好的：", "```json", '{"kind":"answer","reasoning":"x","content":"y"}', "```"].join("\n")
+  const f = parseTemplate(fenced, KNOWN)
+  assert.equal(f.content, "y")
+  return "模板 / 三条分支 / 未知工具 / 非 JSON / 围栏"
+})
+
 await t("过滤进度气泡", async () => {
   const { readTurn } = await import("../src/conversation.mjs")
   // 形状照抄实测：一条 assistant 里既有 turn 气泡又有 text 正文
