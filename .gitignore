@@ -1,0 +1,6 @@
+node_modules/
+_probe/
+_capture/
+_asar/
+dist/
+*.tgz

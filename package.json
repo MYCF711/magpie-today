@@ -1,0 +1,38 @@
+{
+  "name": "today-for-magpie",
+  "version": "0.1.0",
+  "description": "Today (todayai.cn) models in magpie: reads the desktop client's own sign-in on this machine, turns its agent channel into OpenAI chat completions with streaming and tool calls, and serves the account's two model tiers.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": "./index.mjs",
+  "files": [
+    "index.mjs",
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE.md"
+  ],
+  "keywords": [
+    "magpie",
+    "magpie-plugin",
+    "opencode",
+    "opencode-plugin",
+    "opencode-auth",
+    "today",
+    "todayai",
+    "provider"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MYCF711/magpie-today.git"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "magpie": {
+    "maxConcurrency": 2,
+    "icon": "assets/icon.png"
+  }
+}
