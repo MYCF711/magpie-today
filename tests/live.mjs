@@ -17,12 +17,12 @@
 //   tools    带 tools 的请求能解析出 tool_calls（或明确回文本）
 
 import assert from "node:assert/strict"
-import { readDesktopCredential, desktopDeviceId } from "../src/desktop.mjs"
-import { createClient, exchangeSession } from "../src/api.mjs"
+import { createClient } from "../src/api.mjs"
 import { TodayAuthPlugin, _internal } from "../index.mjs"
 import { buildPrompt, extractToolCalls, streamTurn } from "../src/chat.mjs"
 import { createConversation, listConversationMessages, messageCount, sendToConversation } from "../src/conversation.mjs"
 import { staticModels } from "../src/models.mjs"
+import { testAuth } from "./auth.mjs"
 
 const want = process.argv[2]
 const only = (name) => !want || want === name
@@ -44,21 +44,17 @@ async function t(name, fn) {
 
 // ── 取一份可用的 auth ───────────────────────────────────────────────────
 
-const cred = readDesktopCredential()
-if (!cred && (only("login") || only("chat") || only("stream") || only("tools"))) {
-  console.error("本机没有 Today 桌面端登录态，先登录一次再跑。")
-  process.exit(2)
-}
-
 let auth
+let DEVICE = ""
 async function getAuth() {
   return auth
 }
 
 async function ensureAuth() {
   if (auth) return auth
-  const { accessToken, expiresAt } = await exchangeSession(cred.refreshCredential, desktopDeviceId())
-  auth = { access: accessToken, refresh: cred.refreshCredential, expires: expiresAt, accountId: cred.userId, uid: cred.userId, type: "oauth" }
+  const t = await testAuth(process.cwd())
+  auth = t.auth
+  DEVICE = t.device
   return auth
 }
 
@@ -71,11 +67,11 @@ const plugin = await TodayAuthPlugin(
 
 await t("login", async () => {
   const a = await ensureAuth()
-  const api = createClient({ getAuth, deviceId: desktopDeviceId() })
+  const api = createClient({ getAuth, deviceId: DEVICE })
   const r = await api.request("/v1/users/me", { timeout: 20_000 })
   assert.equal(r.status, 200, `users/me -> ${r.status} ${r.text?.slice(0, 200)}`)
-  assert.equal(r.json?.id, cred.userId, "返回的 user id 应等于凭据里的")
-  return `account=${r.json?.preferredName ?? cred.userId}`
+  assert.ok(r.json?.id, "users/me 应返回 id")
+  return `account=${r.json?.preferredName ?? r.json?.id}`
 })
 
 await t("refresh", async () => {
@@ -237,7 +233,7 @@ await t("过滤进度气泡", async () => {
 
 await t("chat", async () => {
   await ensureAuth()
-  const api = createClient({ getAuth, deviceId: desktopDeviceId() })
+  const api = createClient({ getAuth, deviceId: DEVICE })
   const prompt = buildPrompt([
     { role: "user", content: "只回复三个字：收到了" },
   ])
@@ -254,7 +250,7 @@ await t("chat", async () => {
 
 await t("tools", async () => {
   await ensureAuth()
-  const api = createClient({ getAuth, deviceId: desktopDeviceId() })
+  const api = createClient({ getAuth, deviceId: DEVICE })
   const tools = [
     {
       type: "function",

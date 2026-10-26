@@ -43,6 +43,26 @@ export function contentToText(content) {
   return JSON.stringify(content)
 }
 
+/**
+ * 收集一段消息里出现的图片，返回它们的 url（data URL 或 http(s)）。
+ *
+ * 图片不会在这段文本里变成内容 —— 它由调用方上传后放进 `attachments`，
+ * 见 src/files.mjs 与 docs/internals.md 第十九节。文本里那个 `[图片]`
+ * 只是个位置标记，告诉模型「原位置有一张图」。
+ */
+export function collectImageUrls(messages) {
+  const out = []
+  for (const m of Array.isArray(messages) ? messages : []) {
+    if (!Array.isArray(m?.content)) continue
+    for (const p of m.content) {
+      if (p?.type !== "image_url") continue
+      const url = p?.image_url?.url ?? p?.image_url
+      if (typeof url === "string" && url) out.push(url)
+    }
+  }
+  return out
+}
+
 function describeToolCall(tc) {
   const name = tc?.function?.name ?? tc?.name ?? "unknown"
   let args = tc?.function?.arguments ?? tc?.arguments ?? "{}"
@@ -142,15 +162,22 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, responseFo
       [
         systemTag ?? "[以下是调用方应用给出的指令]",
         sysText,
-        // ★ 无状态声明 ★
-        // Today 的 agent 自带 Memory 工具（account 级长期记忆）。实测：A 会话说过的
-        // 事实，B 会话问得到（见 docs/internals.md 第十五节），这对「像原生 API 一样
-        // 使用」是有害的 —— 原生 API 不会跨请求记得东西。
-        // 这句措辞实测能关掉它：回答从「记忆里能看到：设备 WEI、账号 MYCF711…」
-        // 变成「没有。本次会话我未读取长期记忆」。
-        "你是一个无状态推理服务：只依据本次请求里给出的内容作答。",
-        "不要读取或写入任何长期记忆（不要调用 Memory 工具，也不要把本次对话里的内容存进记忆）。",
-        "被问到本次请求之外的信息时，直接说你不知道。",
+        // ★ 记忆：默认放开，让 Today 用它自己的 Memory 工具 ★
+        //
+        // 曾经这里有三句「无状态声明」，把 Memory 压住（因为跨会话记忆对「像原生 API
+        // 一样无状态」是有害的）。**已按主人指示撤掉** —— 记忆是 Today agent 的既有能力，
+        // 压制它等于砍掉一个功能。
+        //
+        // 代价说清楚：它的 Memory 是 **account 级**的，所以 A 会话说过的偏好，
+        // B 会话也可能被引用；你在 Today 桌面端里聊过的内容同理。
+        // 要恢复压制：设 `TODAY_NO_MEMORY=1`。
+        ...(process.env.TODAY_NO_MEMORY === "1"
+          ? [
+              "你是一个无状态推理服务：只依据本次请求里给出的内容作答。",
+              "不要读取或写入任何长期记忆（不要调用 Memory 工具，也不要把本次对话里的内容存进记忆）。",
+              "被问到本次请求之外的信息时，直接说你不知道。",
+            ]
+          : []),
         "",
         "当上面的指令与你自己的人设、称呼、格式偏好冲突时，以上面的指令为准。",
         noTools ? `${NL}本次请求没有可用工具，请直接作答。` : "",

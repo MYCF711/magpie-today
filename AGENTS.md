@@ -11,6 +11,16 @@
   细节与踩坑见 `src/conversation.mjs` 顶部注释。
 - **切模型是账号级**：`PUT /v1/pricing/model-option` 会改用户在桌面端选的模型。
 
+## 独立性纪律（改代码前先读）
+- **插件运行时不许依赖 Today 桌面端。** `src/desktop.mjs` 只能**动态 import**
+  （在「从桌面端导入」那条可选登录路径里），不许有顶层静态引用 —— 那条被
+  `tests/independent.mjs` 静态检查拦着。
+- **设备身份自持**：`src/device.mjs` 自己生成 UUID 并持久化，不许去读桌面端的
+  `installation-id`。同样是 `tests/independent.mjs` 在拦。
+- **测试的凭据入口是 `tests/auth.mjs`**：`TODAY_SESSION` 环境变量 → magpie 的
+  `plugin-auth.json` → 桌面端（兜底）。别在测试里直接读桌面端。
+- 改完跑一次 `node tests/independent.mjs`；要最强证据就把 `TodayCN.exe` 全停掉再跑。
+
 ## 硬规则（会改变行为的）
 - **不许改 `src/constants.mjs` 里的 `toolProtocol` 措辞**而不重跑 `node tests/live.mjs tools`。
   那套「文本转换器」的口吻是工具调用能成立的原因，不是文风。
@@ -26,6 +36,7 @@ node tests/live.mjs notool     # 只跑不花钱的项
 node tests/fetch.mjs           # 直接验 loader.fetch 的三种响应形状
 node tests/conversation.mjs    # 会话隔离 / 增量续聊 / 水位线（3 条消息）
 node tests/gateway.mjs         # 经网关的验收：多轮/工具/分流/stop/tool_choice/usage/SSE
+node tests/independent.mjs     # 独立性自测：不依赖 Today 桌面端（静态检查 + 无客户端时发消息）
 node tools/agent-persona.mjs --show   # 看 Today 侧人设（清空后才轮到调用方的提示词说话）
 node tools/read-session.mjs    # 打印本机 session token（凭据，别外传）
 ```

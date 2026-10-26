@@ -3,17 +3,13 @@
 //
 // 花额度：3 条用户消息。跑之前确认这是你愿意花的。
 import assert from "node:assert/strict"
-import { readDesktopCredential, desktopDeviceId } from "../src/desktop.mjs"
-import { createClient, exchangeSession } from "../src/api.mjs"
+import { createClient } from "../src/api.mjs"
 import { createConversation, listConversationMessages, messageCount, readTurn, sendToConversation } from "../src/conversation.mjs"
+import { testAuth } from "./auth.mjs"
 
-const cred = readDesktopCredential()
-if (!cred) {
-  console.error("没有桌面端登录态，先登录一次再跑。")
-  process.exit(2)
-}
-const { accessToken } = await exchangeSession(cred.refreshCredential, desktopDeviceId())
-const api = createClient({ getAuth: async () => ({ access: accessToken }), deviceId: desktopDeviceId() })
+const { getAuth, device, source } = await testAuth(process.cwd())
+console.log(`登录态来源: ${source}`)
+const api = createClient({ getAuth, deviceId: device })
 
 let pass = 0
 let fail = 0

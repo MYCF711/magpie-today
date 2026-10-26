@@ -69,21 +69,38 @@ export async function createConversation(client) {
 /**
  * 往指定会话追加一条用户消息。
  *
+ * ⚠ 有附件时必须走 `/v1/messages`，不能用 `/v3/messages`：
+ *   v3 的 body schema 是 `bodyType: enum(["text"])` + `body: { text }`，
+ *   **装不下 attachments**。而 `/v1/messages` 的 schema 里同时有 `conversationId`
+ *   与 `attachments` —— 实测（2026-10-26）用它投进 v3 建的会话完全可行，
+ *   图片也真的被模型看见（发上红下绿的图，答「红、绿」）。
+ *
+ * @param {object[]} [attachments] 要随这条消息一起发出去的文件引用
  * @returns {Promise<{threadId: string, messageId: string}>}
  */
-export async function sendToConversation(client, conversationId, text) {
-  const res = await client.request("/v3/messages", {
-    method: "POST",
-    timeout: 60_000,
-    body: {
-      conversationId,
-      clientMessageId: `tc:magpie-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`,
-      bodyType: "text",
-      body: { text },
-    },
-    // clientMessageId 就是去重键（响应里有 isDuplicate），重发不会产生两条。
-    retry: { attempts: 3, delayMs: 500 },
-  })
+export async function sendToConversation(client, conversationId, text, { attachments } = {}) {
+  const clientMessageId = `tc:magpie-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36)}`
+  const hasFiles = Array.isArray(attachments) && attachments.length > 0
+  const res = hasFiles
+    ? await client.request("/v1/messages", {
+        method: "POST",
+        timeout: 90_000,
+        body: {
+          conversationId,
+          content: text,
+          messageType: "text",
+          clientMessageId,
+          attachments,
+        },
+        retry: { attempts: 3, delayMs: 500 },
+      })
+    : await client.request("/v3/messages", {
+        method: "POST",
+        timeout: 60_000,
+        body: { conversationId, clientMessageId, bodyType: "text", body: { text } },
+        // clientMessageId 就是去重键（响应里有 isDuplicate），重发不会产生两条。
+        retry: { attempts: 3, delayMs: 500 },
+      })
   if (!res.ok) {
     const err = new Error(`发送失败：HTTP ${res.status} ${JSON.stringify(res.json ?? res.text).slice(0, 160)}`)
     err.status = res.status
@@ -91,7 +108,10 @@ export async function sendToConversation(client, conversationId, text) {
     throw err
   }
   const msg = res.json?.data?.message
-  return { threadId: msg?.threadId ?? "", messageId: msg?.messageId ?? "" }
+  return {
+    threadId: msg?.threadId ?? res.json?.threadId ?? "",
+    messageId: msg?.messageId ?? res.json?.messageId ?? "",
+  }
 }
 
 /**
