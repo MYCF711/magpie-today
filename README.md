@@ -42,19 +42,25 @@ Today 是一个 agent 产品，**没有 chat/completions 端点**。它的模型
 
 ## 安装
 
-在 magpie 的 **插件 → 发现** 搜 `Today`，点**安装**。
-
 ⚠ 先确认 Today 桌面端**已经登录过**：插件读的是它的本地登录态。
 
-### 命令行
+### 从本地目录（现在就能用）
 
 ```bash
-# 从 npm
-magpie plugin add today-for-magpie
+magpie plugin add "D:\主工作区\magpie-today-plugin"
+printf '1\n' | magpie plugin login today     # 1 = 从本机 Today 桌面端导入
+```
 
-# 从仓库源码
+按目录装是**活链**：magpie 直接从那个目录加载，改完代码重新加载即可，不用复制产物。
+实测装完立刻生效，不用重启 magpie。
+
+### 从仓库源码（待发布）
+
+```bash
 magpie plugin add github:MYCF711/magpie-today
 ```
+
+⚠ 这条要等仓库推上去之后才通。npm 上还没有包：`magpie plugin add today-for-magpie` 现在装不上。
 
 装完确认：
 
