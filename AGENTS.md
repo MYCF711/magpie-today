@@ -25,6 +25,7 @@ node tests/live.mjs            # 全量自测（会真的发消息，消耗账�
 node tests/live.mjs notool     # 只跑不花钱的项
 node tests/fetch.mjs           # 直接验 loader.fetch 的三种响应形状
 node tests/conversation.mjs    # 会话隔离 / 增量续聊 / 水位线（3 条消息）
+node tests/gateway.mjs         # 经网关的验收：多轮/工具/分流/stop/tool_choice/usage/SSE
 node tools/agent-persona.mjs --show   # 看 Today 侧人设（清空后才轮到调用方的提示词说话）
 node tools/read-session.mjs    # 打印本机 session token（凭据，别外传）
 ```
