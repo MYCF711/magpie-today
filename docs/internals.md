@@ -893,3 +893,47 @@ ASCII 35 万字只有 0.33 MiB、照样通过 ⇒ **按字节算，不按字符*
 第一版探针用 `readTurn(rows, 0)`，每轮都从第 0 条开始扫，
 于是第二轮立刻看见上一轮的终稿、0.3 秒就"答"出来 —— 读数是假的。
 必须像插件那样**发送前先记 `afterCount`**。这条错误在 tests/image.mjs 里也埋过一次，已修。
+
+---
+
+## 二十一、接进 DSH 的实际配置（能跑起来的那份）
+
+插件装好后，DSH 侧在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里加一个 provider：
+
+```yaml
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      today:
+        displayName: Today (反代)
+        apiKey: local
+        api: openai-completions
+        baseURL: http://127.0.0.1:3425/v1     # magpie 网关
+        models:
+          - id: today/deepseek-v4.1-flash
+            name: DeepSeek V4.1 Flash (Today 反代)
+            contextWindow: 1000000
+            maxTokens: 8192
+            input: [text, image]
+          - id: today/glm-5.3
+            name: GLM 5.3 (Today 反代, 4x)
+            contextWindow: 1000000
+            maxTokens: 8192
+            input: [text, image]
+```
+
+要点：
+
+- **模型是手写的，不来自 `/v1/models`。** 网关的 `/v1/models` 只暴露路由组
+  `group/deepseek-v4.1-flash1017` 一个 id；DSH 显示的是这里手写的条目。
+  两者都可用（实测 `today/deepseek-v4.1-flash` 与 `group/deepseek-v4.1-flash1017` 都返回 200）。
+- `contextWindow: 1000000` 有实测依据（第二十节：累积 110 万字仍记得）。
+- `maxTokens: 8192` 有实测依据（1500 行 / 6392 字符内联输出无截断；要 4000 行它自己分批）。
+- `input: [text, image]` —— 图像已支持（第十九节之后那节：走 `/v1/files` 上传 + `attachments`）。
+- **DSH 有配置热重载**：改完这个文件不用重启（bundle 里的 `refresh()`：
+  「a hot-reload of a live app must never take the process down」）。
+  实测：进程 10:58 启动、配置 18:18 改，界面里已经能看到 `Today` 条目。
+
+⚠ 改这个文件前先备份（我在每次改前都留了 `cordis.patch.yml.bak-*`）。
+YAML 解析失败时 DSH 会保留上一棵可用的树 —— 不会崩，但你的改动也不生效。
