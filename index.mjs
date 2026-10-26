@@ -383,11 +383,14 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             } catch {
               return errorResponse(400, "请求体不是合法 JSON", "invalid_request_error")
             }
-            // 排障：如果调用方在最后一条消息里写了这个哨兵，就把**插件实际收到的 body 字段**
-            // 原样回给它。用来判断「参数是被上游剥掉了，还是插件没处理」。
-            // 正常调用不会触发（没人会写这串标记）。
+            // 排障探针：请求里带 `[[TODAY_BODY_KEYS]]` 时，把**插件实际收到的 body 字段名**
+            // 原样回给调用方。用来判断「参数是被上游剥掉了、被中间层剥掉了，还是插件没做」。
+            //
+            // ⚠ 必须显式开 `TODAY_PROBE=1` 才生效。默认关着 —— 它是一条绕过模型的路径，
+            //   不该在正常运行时可被任意文本触发（那等于给调用方一个探针开关）。
+            //   排查用法见 docs/internals.md 第 17.1 节。
             const SENTINEL = "[[TODAY_BODY_KEYS]]"
-            if (rawBody.includes(SENTINEL)) {
+            if (process.env.TODAY_PROBE === "1" && rawBody.includes(SENTINEL)) {
               return new Response(
                 JSON.stringify({
                   id: "chatcmpl-probe",
