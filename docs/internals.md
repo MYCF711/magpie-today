@@ -340,3 +340,76 @@ Today 的 agent 每轮都会被前置一段**服务端人设**（`GET /v1/agents
 
 **另一个大概率被问到的问题**：并发。Today 的 agent 侧对并发没有公开口径，
 插件 `maxConcurrency: 2` 是照模板给的保守值，**未实测**。
+
+---
+
+## 十二、独立运行：不依赖桌面端
+
+最初的实现从本机 Today 桌面端读登录态（`%APPDATA%\Today CNccount-credentials.slot-*`），
+在 `installation-id` 里取设备 id。那等于把插件绑在「装了并登录过桌面端」这台机器上。
+改成独立的之后，两条依赖都断了 —— 下面是怎么断的。
+
+### 12.1 登录：只有手机 OTP 一条自助路
+
+把 better-auth 的端点逐个探过（`GET` 存在性 + 非法输入的报错形状）：
+
+| 端点 | 结果 |
+|---|---|
+| `POST /api/auth/phone-number/send-otp` | **200** `{"message":"code sent"}`；号码要带国家码，`13800000000` 这种不带会被 400 `INVALID_PHONE_NUMBER` |
+| `POST /api/auth/phone-number/verify` | body `{phoneNumber, code}` → **`{"token":"<session token>"}`**（就是 refresh 位要的那 32 字符） |
+| `POST /api/auth/email-otp/send-verification-otp` | 端点存在，但 `sign-in` 类型走不通 |
+| `POST /api/auth/sign-in/email-otp` / `sign-up/email` | **403 `auth.email_sign_in_disabled`** —— 「Email sign-in is unavailable in this region」 |
+| `GET /api/auth/oauth2/authorize` | 只接受**注册过的** redirect_uri |
+| `/api/auth/.well-known/openid-configuration`、`/jwks`、`/providers` | 404（没开这些） |
+
+redirect_uri 逐个试过（这是「能不能用浏览器登录」的关键）：
+
+```
+200  today-connector://auth/callback     ← 只认这个（桌面端注册的自定义协议）
+302  http://127.0.0.1:18080/callback     → todayai.cn/login?error=invalid_redirect
+302  http://localhost:18080/callback     → 同上
+302  https://evil.example/cb             → 同上
+```
+
+⇒ **回调落到本地端口会被拒**，所以「在浏览器里登录、把 code 接回插件」这条常规 OAuth 路走不通
+（除非去抢注 `today-connector://` 协议，那是劫持别人的客户端，不做）。
+
+所以独立登录 = 手机 OTP：
+
+```
+POST /api/auth/phone-number/send-otp   { phoneNumber }        → {"message":"code sent"}
+POST /api/auth/phone-number/verify     { phoneNumber, code }  → {"token": "<session token>"}
+GET  /api/auth/token   (Bearer <session token>)               → {"token": "<JWT>"}
+```
+
+第三条就是原来的续期路径，不用改。实现见 `src/login.mjs`。
+
+### 12.2 设备身份：自己造一个就够了
+
+实测：**服务端不校验设备真伪**。用自己造的、从未注册过的 `X-Device-Id` 发消息，
+一样 202 并拿到 threadId；连空值都能过。
+
+```
+device="magpie-standalone-8f2c41"  → 202
+device="magpie-probe"              → 202
+device=""                          → 202
+```
+
+所以改成：插件自己生成一个 UUID，持久化在 magpie 配置目录的 `today-device.json`，
+不在的时候造一个（`src/device.mjs`）。**持久化是必要的** —— 每次进程重启换新 UUID，
+服务端那本设备台账就会多出一台。
+
+### 12.3 验证「真的不依赖」
+
+把 `APPDATA` 指向一个不存在的目录，让 `readDesktopCredential()` 恒返回 null，然后跑完整链路：
+
+```
+桌面端读取是否已失效: true
+无桌面端 -> 200 content="独立"
+usage 无桌面端 -> 7 条窗口, plan=Pro
+```
+
+⇒ chat 与 usage 都不碰桌面端。桌面端读取现在只出现在「一键导入」那条可选登录路径里。
+
+⚠ 仍然**需要**的：一个 Today 账号（手机号能收短信），或者一份 session token。
+这不是依赖，这是「模型从哪来」。

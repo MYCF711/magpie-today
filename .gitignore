@@ -5,3 +5,4 @@ _asar/
 dist/
 *.tgz
 .agent-persona-backup.json
+today-device.json

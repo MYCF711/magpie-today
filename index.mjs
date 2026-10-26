@@ -4,27 +4,27 @@
 // 九项清单（照 magpie 插件契约，一项不缺）
 // ═══════════════════════════════════════════════════════════════════════
 //
-//  钩子（magpie 会调）
-//   ① config(cfg)                       声明 provider + 静态模型表
-//   ② auth.methods[].authorize()        登录（两条：桌面端导入 / 粘贴 session）
-//   ③ auth.refresh(auth, provider)      续期
-//   ④ auth.loader(getAuth, provider)    请求接管
-//   ⑤ auth.usage(getAuth, provider)     额度 → 卡片进度条
-//   ⑥ auth.checkin(getAuth, provider)   签到
-//   ⑦ provider.models(provider,{auth})  每账号目录
-//   ⑧ "chat.headers"(input, output)     每请求加头
-//
-//  数据字段
-//   ⑨ accountId / uid · auth.icon / auth.maxConcurrency
+//  ① config(cfg)                       声明 provider + 静态模型表
+//  ② auth.methods[].authorize()        登录：手机验证码 / 粘贴 session / 桌面端导入（可选）
+//  ③ auth.refresh(auth, provider)      续期
+//  ④ auth.loader(getAuth, provider)    请求接管
+//  ⑤ auth.usage(getAuth, provider)     额度 → 卡片进度条
+//  ⑥ auth.checkin(getAuth, provider)   签到
+//  ⑦ provider.models(provider,{auth})  每账号目录
+//  ⑧ "chat.headers"(input, output)     每请求加头
+//  ⑨ accountId / uid · auth.icon · auth.maxConcurrency
 //
 // ═══════════════════════════════════════════════════════════════════════
-// 这个 provider 的形态：不是 httpx，是翻译层
+// 两条独立的前提
 // ═══════════════════════════════════════════════════════════════════════
 //
-// Today **没有** chat/completions 端点。`loader` 返回的 `fetch` 把请求全截下来自己做：
+// **不依赖 Today 桌面端。** 登录走 Today 自己的手机验证码接口（纯 HTTP）；
+//   设备身份由本插件自己生成并持久化（实测服务端不校验设备真伪，见 src/device.mjs）。
+//   「从桌面端导入登录态」只是便利项，装了客户端的人可以少填一次验证码。
+//
+// **Today 也没有 chat/completions。** `loader` 返回的 `fetch` 把请求全截下来自己做：
 //   一条 OpenAI 请求 → 压成一条 agent 消息 → POST /v1/messages → 轮询 /v2/messages
-//   → 增量转成 OpenAI 的 delta / 非流式响应
-// 所以 `baseURL` 填什么都不影响结果，它只决定 AI SDK 拼出来的 URL 长什么样。
+//   → 增量转成 OpenAI 的 delta / 非流式响应。`baseURL` 填什么都不影响结果。
 //
 // 协议取证、踩过的坑、为什么工具调用要用文本协议：见 docs/internals.md。
 //
@@ -32,6 +32,7 @@
 
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
+
 import { startSelfRegister } from "./src/self-register.mjs"
 import { ICON_DATA_URI } from "./src/icon.mjs"
 import {
@@ -43,7 +44,9 @@ import {
   SESSION_TOKEN_HINT,
 } from "./src/constants.mjs"
 import { createClient, describeError, exchangeSession } from "./src/api.mjs"
-import { desktopDeviceId, desktopInstalled, readDesktopCredential } from "./src/desktop.mjs"
+import { deviceId as persistentDeviceId } from "./src/device.mjs"
+import { sendOtp, verifyOtp } from "./src/login.mjs"
+import { desktopInstalled, readDesktopCredential } from "./src/desktop.mjs"
 import { buildPrompt, extractToolCalls, startTurn, streamTurn } from "./src/chat.mjs"
 import { errorResponse, nonStreamResponse, streamResponse } from "./src/openai.mjs"
 import { resolveOptionId, staticModels } from "./src/models.mjs"
@@ -54,35 +57,22 @@ const REGISTRY_ENTRY = {
   providers: [PROVIDER],
   community: true,
   summary: {
-    en: "Today's (todayai.cn) two model tiers through the desktop client's own sign-in, with streaming and tool calls.",
-    zh: "把 Today（todayai.cn）的两个模型档位接进 magpie，用桌面端自己的登录态，支持流式与工具调用。",
+    en: "Today's (todayai.cn) two model tiers in magpie: phone-code sign-in with no desktop client needed; its agent channel translated into OpenAI chat completions with streaming and tool calls.",
+    zh: "把 Today（todayai.cn）的两个模型档位接进 magpie：手机验证码登录，不需要桌面端；agent 通道翻译成 OpenAI 形状，支持流式与工具调用。",
   },
 }
 
 /**
- * 设备身份。
+ * 每个账号当前已生效的档位，避免每个请求都发一次 PUT。
  *
- * 实测（2026-10-26 全量抓包）：Today 的 HTTP 接口没有签名头，唯一的设备身份就是
- * `X-Device-Id` —— 桌面端把本机的 installation-id 填进去，服务端据此建台账。
- * 复用它能让服务端看到的是同一台设备，而不是每装一次插件就多一台。
- * 读不到桌面端就按账号派生一个稳定的，别每进程随机一个（那才是真的指纹异常）。
+ * ⚠ 档位是**账号级全局设置**，不是 per-request。并发请求切不同档位会互相干扰，
+ *   所以缓一下、只在变了的时候才发 PUT。
  */
-let deviceIdCache = null
-function deviceIdFor(auth) {
-  if (deviceIdCache) return deviceIdCache
-  const fromDesktop = desktopDeviceId()
-  if (fromDesktop) {
-    deviceIdCache = fromDesktop
-    return deviceIdCache
-  }
-  const seed = String(auth?.accountId ?? auth?.uid ?? "today")
-  let h = 0x811c9dc5
-  for (let i = 0; i < seed.length; i++) {
-    h ^= seed.charCodeAt(i)
-    h = Math.imul(h, 0x01000193) >>> 0
-  }
-  deviceIdCache = `magpie-${h.toString(16).padStart(8, "0")}`
-  return deviceIdCache
+const appliedOption = new Map()
+
+function clampPercent(n) {
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(200, Math.round(n * 10) / 10))
 }
 
 /**
@@ -92,29 +82,33 @@ function deviceIdFor(auth) {
  * 当作模型用时会和调用方的系统提示词打架。实测 `PATCH /v1/agents/default` 能置空，
  * 回读长度为 0。**只动 agentCharacter 与 aboutMe，不动 userFacts**（那是记忆）。
  *
- * 备份写在 magpie 的配置目录里，`tools/agent-persona.mjs --restore` 也认这一份。
+ * 备份先写、写不进去就不改 —— 不做还原不了的事。
  */
 async function stripPersona(api, backupDir) {
   const me = await api.request("/v1/agents/me", { timeout: 20_000 })
-  if (!me.ok) return { changed: false }
+  if (!me.ok) return { changed: false, reason: "读不到人设" }
   const cur = me.json ?? {}
   if ((cur.agentCharacter ?? "") === "" && (cur.aboutMe ?? "") === "") {
-    return { changed: false, backup: null, reason: "已经是空的" }
+    return { changed: false, reason: "已经是空的" }
   }
   const file = join(backupDir ?? process.cwd(), ".agent-persona-backup.json")
   try {
     writeFileSync(
       file,
       JSON.stringify(
-        { agentName: cur.agentName, aboutMe: cur.aboutMe, agentCharacter: cur.agentCharacter, savedAt: new Date().toISOString() },
+        {
+          agentName: cur.agentName,
+          aboutMe: cur.aboutMe,
+          agentCharacter: cur.agentCharacter,
+          savedAt: new Date().toISOString(),
+        },
         null,
         2,
       ),
       "utf8",
     )
   } catch {
-    // 备份写不进去就别改账号 —— 不能做一件还原不了的事
-    return { changed: false, backup: null, reason: "备份写不进去，已跳过" }
+    return { changed: false, reason: "备份写不进去，已跳过" }
   }
   const r = await api.request("/v1/agents/default", {
     method: "PATCH",
@@ -124,15 +118,23 @@ async function stripPersona(api, backupDir) {
   return { changed: r.ok, backup: r.ok ? file : null }
 }
 
-function clampPercent(n) {
-  if (!Number.isFinite(n)) return 0
-  return Math.max(0, Math.min(200, Math.round(n * 10) / 10))
+/** 人设处理的选择项，三条登录路径共用。 */
+const PERSONA_PROMPT = {
+  type: "select",
+  key: "persona",
+  message: `${PROVIDER_NAME} 侧的人设（服务端系统提示词）怎么处理？`,
+  options: [
+    {
+      label: "清空（推荐）",
+      value: "strip",
+      hint: "把 agentCharacter/aboutMe 置空，让调用方的系统提示词独占；账号级改动，可还原",
+    },
+    { label: "保留", value: "keep", hint: "不动你的 Today 账号" },
+  ],
 }
 
-/** 每个账号当前已生效的档位，避免每个请求都发一次 PUT。 */
-const appliedOption = new Map()
-
 export const TodayAuthPlugin = async ({ client, directory }) => {
+  const configDir = directory || process.cwd()
   const log = (message) => {
     try {
       client?.app?.log?.({ service: "today", level: "info", message })
@@ -144,16 +146,49 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
     } catch {}
   }
 
-  startSelfRegister(REGISTRY_ENTRY, { configDir: directory, log })
+  startSelfRegister(REGISTRY_ENTRY, { configDir, log })
 
-  const clientFor = (getAuth, auth) =>
-    createClient({ getAuth, deviceId: deviceIdFor(auth) })
+  /** 设备身份：自己生成、持久化在 magpie 配置目录；只有显式从桌面端导入时才带上桌面端认得的那个。 */
+  const deviceId = (auth) => auth?.deviceId || persistentDeviceId(configDir)
+
+  const clientFor = (getAuth, auth) => createClient({ getAuth, deviceId: deviceId(auth) })
+
+  /** 登录收尾：校验 session 换得到 token、可选清人设、组出 magpie 要的返回值。 */
+  async function finishLogin(sessionToken, { accountId, uid, persona, source }) {
+    const { accessToken, expiresAt } = await exchangeSession(sessionToken, null)
+    const api = createClient({
+      getAuth: async () => ({ access: accessToken }),
+      deviceId: persistentDeviceId(configDir),
+    })
+    const probe = await api.request("/v1/users/me", { timeout: 20_000 })
+    if (!probe.ok) {
+      return {
+        type: "failed",
+        error: `${source}登录态不可用（HTTP ${probe.status}）：${describeError(probe.status, probe.json, probe.text)}`,
+      }
+    }
+    const me = probe.json ?? {}
+    let personaResult = null
+    if (String(persona ?? "") === "strip") {
+      personaResult = await stripPersona(api, configDir)
+      if (personaResult.changed) log(`已清空 ${PROVIDER_NAME} 侧人设（备份在 ${personaResult.backup}）`)
+    }
+    return {
+      type: "success",
+      access: accessToken,
+      refresh: sessionToken,
+      expires: expiresAt,
+      accountId: accountId || me.preferredName || uid || me.id,
+      uid: uid || me.id || "",
+      deviceId: persistentDeviceId(configDir),
+      ...(personaResult?.changed ? { personaStrippedAt: new Date().toISOString() } : {}),
+    }
+  }
 
   return {
     // ═══ ① 声明 provider ═════════════════════════════════════════════
     config: async (cfg) => {
       cfg.provider ??= {}
-      // ⚠ 用 ??= ，不覆盖用户在 plugins.json 里配的
       cfg.provider[PROVIDER] ??= {
         name: PROVIDER_NAME,
         npm: "@ai-sdk/openai-compatible",
@@ -172,85 +207,31 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
       methods: [
         {
           type: "oauth",
-          label: `从本机 ${PROVIDER_NAME} 桌面端导入`,
+          label: `${PROVIDER_NAME} 手机号 + 验证码（不需要桌面端）`,
           prompts: [
-            {
-              type: "select",
-              key: "persona",
-              message: `${PROVIDER_NAME} 侧的人设（服务端系统提示词）怎么处理？`,
-              options: [
-                {
-                  label: "清空（推荐）",
-                  value: "strip",
-                  hint: "把 agentCharacter/aboutMe 置空，让调用方的系统提示词独占；账号级改动，可还原",
-                },
-                { label: "保留", value: "keep", hint: "不动你的 Today 账号" },
-              ],
-            },
+            { type: "text", key: "phone", message: "手机号（带国家码）", placeholder: "+8613800000000" },
+            PERSONA_PROMPT,
           ],
           /**
-           * ⚠ authorize 必须立刻返回：真正的活儿在 callback 里。
-           *   在这里 await 用户（或发一次慢请求）会和 magpie 双向死锁
-           *   —— 它开着登录窗口等你的 url，你等它的网络回来。
-           * 读盘是毫秒级的，但校验要发请求，所以校验也放进 callback。
+           * 发码是一次 HTTP 往返（几百毫秒），但真正的等待在 callback —— 用户要看短信。
+           * 这里绝不能 await 用户，否则和 magpie 双向死锁。
            */
           authorize: async (inputs) => {
-            const cred = readDesktopCredential()
-            if (!cred) {
-              return {
-                type: "failed",
-                error: desktopInstalled()
-                  ? `本机 ${PROVIDER_NAME} 桌面端没有登录态。请打开 ${PROVIDER_NAME} 登录一次，然后重试。`
-                  : `本机没有找到 ${PROVIDER_NAME} 桌面端。请先安装并登录，或改用「粘贴 session token」。`,
-              }
-            }
+            const phone = String(inputs?.phone ?? "").trim()
+            const sent = await sendOtp(phone)
+            if (!sent.ok) return { type: "failed", error: sent.message }
             return {
               url: "",
-              method: "auto",
-              instructions: `将从本机 ${PROVIDER_NAME} 桌面端导入登录态。`,
-              callback: async () => {
-                // 一次校验：拉得通 users/me 才算这份 session 是活的
-                try {
-                  const { accessToken, expiresAt } = await exchangeSession(
-                    cred.refreshCredential,
-                    deviceIdFor(cred),
-                  )
-                  const probe = await fetch(`${HOST}/v1/users/me`, {
-                    headers: {
-                      accept: "application/json",
-                      authorization: `Bearer ${accessToken}`,
-                      "x-app-version": "1.23.0",
-                      "x-client-platform": "windows-client",
-                      "x-device-id": deviceIdFor(cred),
-                      "user-agent": "node",
-                    },
-                  })
-                  if (!probe.ok) throw new Error(`HTTP ${probe.status}`)
-                  // 卡片上显示的名字优先用厂商那边的人名，退回到 user id。
-                  // accountId 是显示名，uid 才是身份 —— 同名账号靠 uid 区分（issue #413）。
-                  let me = null
-                  try {
-                    me = await probe.json()
-                  } catch {}
-                  // 人设剥离：账号级改动，只在用户选了「清空」时做，且先把原值备份下来
-                  if (String(inputs?.persona ?? "") === "strip") {
-                    const r = await stripPersona(api, directory)
-                    if (r.changed) log(`已清空 ${PROVIDER_NAME} 侧人设（备份在 ${r.backup}）`)
-                  }
-                  return {
-                    type: "success",
-                    access: accessToken,
-                    refresh: cred.refreshCredential,
-                    expires: expiresAt,
-                    accountId: me?.preferredName ?? cred.userId,
-                    uid: cred.userId,
-                  }
-                } catch (e) {
-                  return {
-                    type: "failed",
-                    error: `桌面端登录态已失效（${String(e?.message ?? e)}）：请在 ${PROVIDER_NAME} 里重新登录后重试。`,
-                  }
-                }
+              method: "code",
+              instructions: `验证码已发送至 ${phone}，在下面填入 6 位数字完成登录。`,
+              callback: async (code) => {
+                const v = await verifyOtp(phone, code)
+                if (!v.ok) return { type: "failed", error: v.message }
+                return finishLogin(v.sessionToken, {
+                  accountId: phone,
+                  persona: inputs?.persona,
+                  source: "手机验证码",
+                })
               },
             }
           },
@@ -272,30 +253,54 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               placeholder: `例如 ${PROVIDER_NAME} 小号`,
               validate: () => undefined,
             },
+            PERSONA_PROMPT,
           ],
           /**
-           * session token 长期有效，access token 只有 10 分钟 ——
+           * session token 长期有效、access token 只有 10 分钟 ——
            * 所以存 session（refresh 位），access 由 refresh 钩子按需换。
-           * 拿到 token 的地方见 constants.mjs 的 SESSION_TOKEN_HINT。
            */
           authorize: async (inputs) => {
             const session = String(inputs?.session ?? "").trim()
             if (!session) return { type: "failed", error: "请粘贴 session token" }
-            try {
-              const { accessToken, expiresAt } = await exchangeSession(session, null)
-              const note = String(inputs?.note ?? "").trim()
-              return {
-                type: "success",
-                access: accessToken,
-                refresh: session,
-                expires: expiresAt,
-                accountId: note || `${PROVIDER_NAME} ${session.slice(-6)}`,
-              }
-            } catch (e) {
+            const note = String(inputs?.note ?? "").trim()
+            const r = await finishLogin(session, {
+              accountId: note || `${PROVIDER_NAME} ${session.slice(-6)}`,
+              persona: inputs?.persona,
+              source: "session token",
+            })
+            if (r.type === "failed") r.error = `${r.error}。取法：${SESSION_TOKEN_HINT}`
+            return r
+          },
+        },
+        {
+          type: "oauth",
+          label: `从本机 ${PROVIDER_NAME} 桌面端导入（可选便利项）`,
+          prompts: [PERSONA_PROMPT],
+          /**
+           * ⚠ authorize 立刻返回：这里只读一个本地文件（毫秒级），
+           *   校验（要发请求）放进 callback。
+           */
+          authorize: async (inputs) => {
+            const cred = readDesktopCredential()
+            if (!cred) {
               return {
                 type: "failed",
-                error: `session token 无效（${String(e?.message ?? e)}）。取法：${SESSION_TOKEN_HINT}`,
+                error: desktopInstalled()
+                  ? `本机 ${PROVIDER_NAME} 桌面端没有登录态。请打开它登录一次，或改用手机验证码。`
+                  : `本机没装 ${PROVIDER_NAME} 桌面端。用「手机号 + 验证码」那条路即可，不需要客户端。`,
               }
+            }
+            return {
+              url: "",
+              method: "auto",
+              instructions: `将从本机 ${PROVIDER_NAME} 桌面端导入登录态。`,
+              callback: async () =>
+                finishLogin(cred.refreshCredential, {
+                  accountId: cred.userId,
+                  uid: cred.userId,
+                  persona: inputs?.persona,
+                  source: "桌面端",
+                }),
             }
           },
         },
@@ -303,16 +308,14 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
 
       // ═══ ③ 续期 ══════════════════════════════════════════════════
       /**
-       * 返回值**合并**到旧账号上（与 client.auth.set 的整体替换不同）。
-       *
-       * 桌面端的 session token 换 token 后不变，所以 refresh 位原样带回去 ——
-       * 这也是为什么这里能安全地反复续期。
+       * 返回值**合并**到旧账号上（不是整体替换）。
+       * session token 换 token 后不变，所以 refresh 位原样带回去。
        */
       async refresh(auth) {
         const session = auth?.refresh
         if (!session) return undefined
         try {
-          const { accessToken, expiresAt } = await exchangeSession(session, deviceIdFor(auth))
+          const { accessToken, expiresAt } = await exchangeSession(session, deviceId(auth))
           return { access: accessToken, refresh: session, expires: expiresAt }
         } catch (e) {
           if (/401|403|invalid|expired|失效/i.test(String(e?.message))) {
@@ -333,9 +336,8 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
           apiKey: "today-agent",
 
           async fetch(input, init) {
-            // ⚠ 每次重新读 auth —— 可能刚被 refresh 更新过
             const fresh = await getAuth()
-            if (!fresh) return errorResponse(401, "Today 未登录", "authentication_error")
+            if (!fresh) return errorResponse(401, `${PROVIDER_NAME} 未登录`, "authentication_error")
 
             const req = input instanceof Request ? input : null
             const rawBody =
@@ -368,7 +370,6 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                   appliedOption.set(acctKey, wantOption)
                   log(`已切到 ${wantOption}`)
                 } else if (r.status === 400 || r.status === 403) {
-                  // 这个账号不允许这个档位。明确报出去，别静默换一个模型回答。
                   return errorResponse(
                     404,
                     `${PROVIDER_NAME} 账号不能选择模型 ${body.model}`,
@@ -410,10 +411,11 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               return errorResponse(502, String(e?.message ?? e))
             }
 
-            const modelId = resolveOptionId(body.model) ? String(body.model).split("/").pop() : MODEL_OPTIONS[0].id
+            const modelId = resolveOptionId(body.model)
+              ? String(body.model).split("/").pop()
+              : MODEL_OPTIONS[0].id
             const source = () => streamTurn(api, turn.threadId, { signal: init?.signal })
 
-            // 非流式：跑完再一次性返回
             if (body.stream === false) {
               try {
                 let text = ""
@@ -421,13 +423,11 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                   if (ev.type === "done") text = ev.text ?? text
                 }
                 const calls = knownNames.size ? extractToolCalls(text, knownNames) : null
-                return nonStreamResponse({
-                  modelId,
-                  text: calls ? "" : text,
-                  toolCalls: calls,
-                })
+                return nonStreamResponse({ modelId, text: calls ? "" : text, toolCalls: calls })
               } catch (e) {
-                if (e?.signIn) return errorResponse(401, "登录已失效，请重新登录", "authentication_error")
+                if (e?.signIn) {
+                  return errorResponse(401, "登录已失效，请重新登录", "authentication_error")
+                }
                 return errorResponse(502, String(e?.message ?? e))
               }
             }
@@ -442,7 +442,7 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
        * 数据来自 `GET /v1/pricing/status`。
        *
        * ⚠ 每条窗口都必须有有限的 `used`：它不只画进度条，还是**路由的排序输入**。
-       *   漏了会被归一成 0 = 「满额」，一个耗尽的账号反而被顶到队首（HOOKS.md 第十一节）。
+       *   漏了会被归一成 0 = 「满额」，一个耗尽的账号反而被顶到队首。
        */
       async usage(getAuth) {
         const auth = await getAuth()
@@ -462,7 +462,6 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
           const windows = []
           const resetsAt = usage?.resetAt ?? undefined
 
-          // 总量：服务端给「剩余百分比」，换算成 used
           if (typeof usage?.progress === "number") {
             windows.push({
               name: "套餐用量",
@@ -472,8 +471,6 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               aside: false,
             })
           }
-
-          // 分项：服务端已按「已用百分比」给出，直接用
           for (const item of usage?.breakdown?.items ?? []) {
             const used = Number(item?.usedPercent)
             if (!Number.isFinite(used)) continue
@@ -485,9 +482,6 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               aside: false,
             })
           }
-
-          // 一条窗口都没有 ⇒ 这个账号没发布用量。给一条 aside 占位，
-          // 让路由明确知道「这里没有参与排序的额度窗口」，而不是当成满额。
           if (windows.length === 0) {
             windows.push({
               name: "套餐用量",
@@ -530,8 +524,8 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
 
     // ═══ ⑧ 每请求加头 ═════════════════════════════════════════════
     /**
-     * 这里加不了东西：请求全套被 loader 的 fetch 截住，加在 gateway 头上的到不了上游。
-     * 保留钩子是为了确认它不会被别的插件污染 —— 我们不往外发 headers。
+     * 加不了东西：请求全套被 loader 的 fetch 截住，加在 gateway 头上的到不了上游。
+     * 保留钩子是为了表明「本插件不往请求上加自定义头」这个事实。
      */
     "chat.headers": async (input, output) => {
       if (input?.model?.providerID !== PROVIDER) return
@@ -540,4 +534,4 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
   }
 }
 
-export const _internal = { REGISTRY_ENTRY, appliedOption, staticModels }
+export const _internal = { REGISTRY_ENTRY, appliedOption, staticModels, stripPersona }

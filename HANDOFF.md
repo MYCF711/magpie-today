@@ -1,6 +1,6 @@
 # magpie-today-plugin · 当前状态
 
-> 更新于 2026-10-26 15:45
+> 更新于 2026-10-26 16:05
 
 ## 用户原话
 > 参考之前的反代项目经验，freebuff的cli，jet hub。反代这个软件的模型，要求你完全遵从模板仓库做magpie的插件，我已经登录了一个号，你可以获取这个号的本地凭证
@@ -42,6 +42,23 @@
 **③ 系统提示词剥离**：做完了。`PATCH /v1/agents/default` 可置空 `agentCharacter`/`aboutMe`（实测 200、回读 0 长度）。
 新增 `tools/agent-persona.mjs --show|--strip|--restore`；插件登录时问一句，选「清空」才动，先备份再改。
 **当前状态：已清空**，备份在 `.agent-persona-backup.json`（已 gitignore）。`userFacts` 没动。
+
+## 16:05 追加：独立运行（不依赖桌面端）
+
+主人要求「插件要独立运行，不依赖 today」。两条依赖都断了：
+
+1. **登录**：改成手机号 + 验证码（纯 HTTP）。实测这是唯一自助路 —— 邮箱登录本地区关闭
+   （403 `auth.email_sign_in_disabled`），OAuth 只认注册过的 `today-connector://` 回调，
+   本地端口回调被拒（`error=invalid_redirect`）。实现 `src/login.mjs`。
+2. **设备身份**：自己生成 UUID、持久化到 magpie 配置目录（`today-device.json`），
+   不再读桌面端 `installation-id`。实测服务端不校验设备真伪（自造 id 照样 202，空值也行）。
+   实现 `src/device.mjs`。
+
+验证（`_probe/standalone.mjs`）：把 `APPDATA` 指向不存在的目录让桌面端读取恒失败，
+chat 与 usage 仍 200。桌面端读取只剩「一键导入」那条可选登录路径在用。
+
+三条登录路径现在是：① 手机验证码（不需要桌面端，**默认推荐**）② 粘贴 session ③ 桌面端导入（可选）。
+`magpie plugin login today` 的菜单已确认是这三条。
 
 ## 下一步（唯一的下一动作）
 把仓库 init + commit，然后问主人要不要建 GitHub 远端（`MYCF711/magpie-today`）并推上去 ——
