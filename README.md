@@ -109,6 +109,36 @@ POST /v1/messages { conversationId, content, attachments: [{type,storagePath,fil
 
 ---
 
+## 与 DSH 的兼容性
+
+| 能力 | 状态 |
+|---|---|
+| Standard 模式（逐工具呈现） | ✅ 支持，实测 8/8（`tests/gateway.mjs`） |
+| 思考过程（`reasoning_content`） | ✅ 支持（模型自写推理摘要，见下） |
+| 图像输入 | ✅ 支持（`/v1/files` 上传 + `attachments`） |
+| 多轮 / 会话隔离 | ✅ 支持（`POST /v3/conversations`） |
+| **PTC 模式（`run_code` + 生成式 SDK）** | ❌ **不支持**，见下 |
+
+### 为什么不支持 PTC
+
+DSH 的 PTC 模式把工具收进一段 TypeScript SDK，模型只输出 `run_code({code, description})`。
+在这条通道上实测 **1/5**（5 道题：单工具 / 并发 / 循环 / 条件 / 纯回答），失败原因两类：
+
+1. **它优先用自己的原生工具。** 有 2 题直接跑 `DeviceList` / `DeviceInvoke` / `Bash` 自己干完了，
+   压根没进模板分支（连 `reasoning` 都没给）。
+2. **写出来的 `code` 不是要的东西。** 单工具那题写成了 `tools.bash({command:"echo check"})` 这种无意义内容；
+   循环题只 `glob` 了一下，没有循环。
+
+根因是结构性的：Today 的 agent **手上真能干活的工具**（Bash / DeviceInvoke / WebFetch），
+优先级高于「只写代码不执行」的指令。PTC 要求它**写程序**而不是**调一次工具**，
+冲突比 Standard 模式更激烈 —— 模型自然会想「我直接做不就行了」。
+
+**这不是客户端问题**，是这条通道的性质。所以插件声明里写明「只支持原生（逐工具）呈现」。
+
+⚠ 在 DSH 里请用 **Standard 模式**；选 PTC 会拿到 1/5 那种结果。
+
+---
+
 ## 模型
 
 | 模型 | 上下文 | 倍率 |

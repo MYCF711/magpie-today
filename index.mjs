@@ -61,8 +61,8 @@ const REGISTRY_ENTRY = {
   providers: [PROVIDER],
   community: true,
   summary: {
-    en: "Today's (todayai.cn) two model tiers in magpie: phone-code sign-in with no desktop client needed; its agent channel translated into OpenAI chat completions with streaming and tool calls.",
-    zh: "把 Today（todayai.cn）的两个模型档位接进 magpie：手机验证码登录，不需要桌面端；agent 通道翻译成 OpenAI 形状，支持流式与工具调用。",
+    en: "Today's (todayai.cn) two model tiers in magpie: phone-code sign-in with no desktop client needed; its agent channel translated into OpenAI chat completions with streaming, tool calls and reasoning. Supports the native (per-tool) presentation only, not PTC.",
+    zh: "把 Today（todayai.cn）的两个模型档位接进 magpie：手机验证码登录，不需要桌面端；agent 通道翻译成 OpenAI 形状，支持流式、工具调用与思考过程。只支持原生（逐工具）呈现，不支持 PTC。",
   },
 }
 

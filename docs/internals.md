@@ -1019,3 +1019,69 @@ DSH 又执行一遍 —— 分流优化白做，还多一轮往返。
    **"它们故意没有出现在模板里 —— 直接自己做，把结果写进 content"**，并说明原因（会白多一轮）。
 
 修完实测：`tool_calls: []`、正文正常返回、reasoning 里它自己解释了"web_fetch 不在模板里但我有原生 WebFetch"。
+
+---
+
+## 二十四、提示的段序：最重要的放最末
+
+### 24.1 为什么排序（近因效应）
+
+模型对靠近末尾的指令遵从度更高。而这段提示是**每一轮都重发的常驻成本**，
+所以「不能不遵守」的那条必须压在最后，不能被别的段落挤到中间去。
+
+### 24.2 现在的段序（低 → 高）
+
+```
+1. 调用方的系统提示词              背景，可以长
+2. 冲突裁决                        短，只在需要时起作用
+3. 关于正文内容（response_format）  条件性要求，仅当调用方给了
+4. 你自己就能做的事                减少往返的优化提示
+5+6. 工具表 → 输出契约 ★ 最重要 ★  工具表在前是因为契约里说"照上面的形状"，
+                                   两者必须相邻；契约收尾
+```
+
+**为什么工具表和契约要绑在一起**：契约里写「照上面的形状」，工具表就是那个形状的输入。
+拆开会让中间插入的段落把最重要的一条推到中间 —— 这正是修之前的 bug。
+
+### 24.3 修掉的一处冲突
+
+旧版 `response_format` 会吐一段「**只输出一个 JSON 对象**，不要输出 JSON 之外的任何字符」，
+而末尾契约允许 `kind="answer"` 时输出纯文本正文 —— **两段直接打架**。
+
+改成约束「**content 字段的内容**」而不是整段输出：
+
+> 本次调用方要求 JSON 输出。放正文时，content 字段的值必须是一个合法的 JSON 对象字符串。
+
+形状归契约管，内容归 response_format 管。各管一层，不再冲突。
+
+### 24.4 从 DSH 源码里补齐的两处
+
+读 DSH bundle 里的 openai-completions 解析器，发现两个我们漏报的字段：
+
+**① usage 的 details 层**：DSH 读 `prompt_tokens_details.cached_tokens` 算缓存成本。
+   我们一直只给三个顶层数字。字段缺失会被当成「未提供」而不是「没命中」，现在补齐
+   （值仍是 0，因为 Today 不回报缓存）。
+
+**② 流式 reasoning 必须是独立帧**：DSH 把 thinking 当**独立 content block**
+   （`thinking_start` → `thinking_delta` → `thinking_end`），从 `delta.reasoning_content` 读。
+   和正文混在同一帧会被当正文。
+
+实测帧序列（修完）：
+
+```
+[0] delta={"role":"assistant","content":""}
+[1] delta={"reasoning_content":"这是简单算术，不需要工具。"}   ← 独立
+[2] delta={"content":"1+1 等于 2。"}
+[3] finish_reason="stop"
+[4] usage={…, prompt_tokens_details:{cached_tokens:0}, completion_tokens_details:{reasoning_tokens:0}}
+```
+
+### 24.5 一次多工具并发的验证
+
+DSH 的 `delta.tool_calls` 支持分片累积（按 `index` 合并）。实测两个并发调用：
+
+```
+index=0 id=call_xxx name=read  args={"path":"D:/a.txt"}
+index=1 id=call_yyy name=bash  args={"command":"npm test"}
+finish_reason="tool_calls"
+```

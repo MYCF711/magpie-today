@@ -43,20 +43,23 @@ export function unsupportedNotes(body) {
 export function responseFormatInstruction(responseFormat) {
   const type = responseFormat?.type
   if (type === "json_object") {
+    // ⚠ 不要另起一套「只输出 JSON」的规则 —— 那会和末尾的输出契约冲突
+    //   （契约允许 kind="answer" 时输出纯文本正文）。
+    //   正确做法是**约束 content 字段的内容**，形状仍由末尾的契约管。
     return [
-      "## 输出格式要求",
+      "## 关于正文内容",
       "",
-      "本次只输出一个合法的 JSON 对象：不要 markdown 代码块围栏、不要前后解释、",
-      "不要输出 JSON 之外的任何字符。",
+      "本次调用方要求 JSON 输出。放正文时，content 字段的值必须是一个合法的 JSON 对象字符串：",
+      "不要在里面再套 markdown 代码块围栏，不要在 JSON 前后加解释。",
     ].join("\n")
   }
   if (type === "json_schema") {
     const schema = responseFormat?.json_schema?.schema
     const name = responseFormat?.json_schema?.name
     return [
-      "## 输出格式要求",
+      "## 关于正文内容",
       "",
-      `本次只输出一个合法的 JSON 对象${name ? `（schema 名：${name}）` : ""}：`,
+      `本次调用方要求 JSON 输出${name ? `（schema 名：${name}）` : ""}。`,
       "不要 markdown 代码块围栏、不要前后解释、不要输出 JSON 之外的任何字符。",
       schema ? `\n必须满足这个 JSON Schema：\n${JSON.stringify(schema)}` : "",
     ]

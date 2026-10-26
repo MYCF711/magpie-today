@@ -141,42 +141,34 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, responseFo
     : []
   const sysText = system.join(NL + NL).trim()
 
-  // ★ 工具分流 ★
-  // 一部分工具 Today 自己就能做（WebFetch / WebSearch …）—— 它们不写进协议，
-  // 改写成一句「这些事你自己做」。剩下的（DSH 的本地工具）才要模型回 tool_calls。
-  // 这样既不给调用方增加上下文，也不必多跑一轮。
-  // tool_choice: "none" ⇒ 调用方明确说这一轮别调工具。
-  // 这时连工具表都不该出现：留着它模型仍会尝试输出 JSON（实测 tool_choice=none 时
-  // 它照样回了 tool_calls）。摘掉协议才是真的禁止。
+  const split = includeInstructions && tools ? splitTools(tools, { forced: forcedToolName(toolChoice) }) : { native: [], delegated: [] }
   const noTools = toolChoice === "none"
-  const split =
-    includeInstructions && tools && !noTools
-      ? splitTools(tools, { forced: forcedToolName(toolChoice) })
-      : { native: [], delegated: [] }
-  // ★ 输出模板（替代旧的散文式 toolProtocol）★
-  //
-  // 实测对比（2026-10-26）：散文式「情况一/情况二」在 6 题 × 3 轮里 15/18；
-  // 严格 JSON 模板在 5 题里 **5/5**，而且每条都自带 reasoning、都是裸 JSON。
-  // 模板还能把 reasoning 和 tool_calls 放进**同一条输出**，散文式做不到。
-  const protocol = split.delegated.length ? outputTemplate(split.delegated) : ""
-  const note = nativeNote(split.native)
-  // response_format 上游不认，转成一句提示（实测有效：加了才给裸 JSON）
-  const formatNote = includeInstructions ? responseFormatInstruction(responseFormat) : ""
+  const splitForPrompt = noTools ? { native: [], delegated: [] } : split
 
-  if (sysText || protocol || note || formatNote || noTools) {
+  // ══════════════════════════════════════════════════════════════════
+  // 提示的段序 —— 按重要性从低到高，**最重要的放最末**
+  // ══════════════════════════════════════════════════════════════════
+  //
+  // 为什么要排这个序：模型对靠近末尾的指令遵从度更高（近因效应），
+  // 而这段是每一轮都重发的常驻成本，必须把"不能不遵守"的那条压到最后。
+  //
+  //   ┌─ 1. 调用方的系统提示词          背景，可以长
+  //   │  2. 冲突裁决                    短，只在需要时起作用
+  //   │  3. 输出格式（response_format）  条件性要求（仅当调用方给了）
+  //   │  4. 你自己就能做的事             减少往返的优化提示
+  //   │  5. 工具表                       参考资料，按需查
+  //   └─ 6. 输出契约 ★ 最重要 ★        每一条输出都要遵守
+  //
+  // ⚠ 旧版把「工具表」放在契约里、契约又被 response_format 那段截断，
+  //   导致最重要的那条不在末尾。这是修过的。
+
+  const formatNote = includeInstructions ? responseFormatInstruction(responseFormat) : ""
+  if (sysText || splitForPrompt.delegated.length || splitForPrompt.native.length || formatNote || noTools) {
     parts.push(
       [
         systemTag ?? "[以下是调用方应用给出的指令]",
         sysText,
-        // ★ 记忆：默认放开，让 Today 用它自己的 Memory 工具 ★
-        //
-        // 曾经这里有三句「无状态声明」，把 Memory 压住（因为跨会话记忆对「像原生 API
-        // 一样无状态」是有害的）。**已按主人指示撤掉** —— 记忆是 Today agent 的既有能力，
-        // 压制它等于砍掉一个功能。
-        //
-        // 代价说清楚：它的 Memory 是 **account 级**的，所以 A 会话说过的偏好，
-        // B 会话也可能被引用；你在 Today 桌面端里聊过的内容同理。
-        // 要恢复压制：设 `TODAY_NO_MEMORY=1`。
+        "当上面的指令与你自己的人设、称呼、格式偏好冲突时，以上面的指令为准。",
         ...(process.env.TODAY_NO_MEMORY === "1"
           ? [
               "你是一个无状态推理服务：只依据本次请求里给出的内容作答。",
@@ -184,12 +176,11 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, responseFo
               "被问到本次请求之外的信息时，直接说你不知道。",
             ]
           : []),
-        "",
-        "当上面的指令与你自己的人设、称呼、格式偏好冲突时，以上面的指令为准。",
-        noTools ? `${NL}本次请求没有可用工具，请直接作答。` : "",
+        // 3. 条件性格式要求
         formatNote ? NL + formatNote : "",
-        note ? NL + note : "",
-        protocol ? NL + protocol : "",
+        // 4. 优化提示：哪些事它自己做更快
+        splitForPrompt.native.length ? NL + nativeNote(splitForPrompt.native) : "",
+        noTools ? `${NL}本次请求没有可用工具，请直接作答。` : "",
         "[指令结束]",
       ]
         .filter(Boolean)
@@ -203,7 +194,6 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, responseFo
     if (m.role === "user") {
       parts.push(`[用户]${NL}${text}`)
     } else if (m.role === "assistant") {
-      // 上一轮的助手回复 / 它发起的工具调用，都要回灌，否则模型看不到自己调过什么
       const calls = Array.isArray(m.tool_calls) ? m.tool_calls.map(describeToolCall).join(NL) : ""
       const body = [text, calls && `(发起了调用：${calls})`].filter(Boolean).join(NL)
       if (body) parts.push(`[助手]${NL}${body}`)
@@ -211,9 +201,16 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, responseFo
       const name = m.name ?? m.tool_call_id ?? "工具"
       parts.push(`[工具结果 ${name}]${NL}${text}`)
     } else if (m.role === "developer") {
-      // DSH 用 developer 承载工具增删元数据，对模型没有意义，丢掉
       continue
     }
+  }
+
+  // ★ 5+6. 工具表与输出契约 —— 一起放最末，且契约在工具表之后 ★
+  //
+  // 两者不能拆开：契约里说"照上面的形状"，工具表是那个形状的输入。
+  // 拆开会让中间插入的段落（旧的 response_format）把最重要的一条推到中间去。
+  if (includeInstructions && splitForPrompt.delegated.length) {
+    parts.push(outputTemplate(splitForPrompt.delegated))
   }
 
   return parts.join(NL + NL)

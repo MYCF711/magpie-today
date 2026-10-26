@@ -14,6 +14,21 @@ import { constrainOutput } from "./params.mjs"
 import { parseTemplate, templateToolNames } from "./template.mjs"
 import { estimateUsage } from "./tokens.mjs"
 
+/**
+ * 把估算用量包装成 OpenAI 的完整形状。
+ *
+ * DSH 会读 `prompt_tokens_details.cached_tokens`（`getMistralCachedPromptTokens` 那一族函数），
+ * 用来算缓存命中的成本。我们报 0 是对的 —— Today 的通道不回报缓存命中，
+ * 但**字段必须在**，否则 DSH 那边会当成"未提供"而不是"没命中"。
+ */
+function fullUsage(u) {
+  return {
+    ...u,
+    prompt_tokens_details: u.prompt_tokens_details ?? { cached_tokens: 0 },
+    completion_tokens_details: u.completion_tokens_details ?? { reasoning_tokens: 0 },
+  }
+}
+
 function id() {
   return `chatcmpl-${Math.random().toString(36).slice(2, 12)}`
 }
@@ -50,7 +65,7 @@ export function nonStreamResponse({ modelId, text, toolCalls, created, promptTex
         finish_reason: hasTools ? "tool_calls" : "stop",
       },
     ],
-    usage: usage ?? estimateUsage({ promptText, completionText: content ?? "" }),
+    usage: fullUsage(usage ?? estimateUsage({ promptText, completionText: content ?? "" })),
     ...(debugTools !== undefined ? { today_debug_tools: debugTools } : {}),
     // ★ 它自己执行过的工具调用（不是"请求你执行"）★
     //
@@ -118,8 +133,21 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
         const constrained = constrainOutput(parsed.content || (parsed.kind === "raw" ? full : ""), requestBody)
         const calls = parsed.toolCalls ?? (knownNames?.size ? extractToolCalls(constrained, knownNames) : null)
 
-        // 思考过程先发（DSH 认 delta.reasoning_content）
-        if (parsed.reasoning) frame({ reasoning_content: parsed.reasoning })
+        // ★ 思考过程：单独一个块 ★
+        //
+        // DSH 的解析器把 thinking 当成**独立的 content block**
+        // （thinking_start → thinking_delta → thinking_end），而 OpenAI-completions 路径
+        // 从 `delta.reasoning_content` 读它。所以：
+        //   · 不能和正文混在同一帧（会被当正文）
+        //   · 先发只有 reasoning 的帧，再发只有 content 的帧
+        // DSH 的 openai-completions 解析器认两种形态：
+        //   ① `delta.reasoning_content`（OpenAI 兼容社区惯例）
+        //   ② `delta.content: [{type:"thinking",...}, {type:"text",...}]`（它自己的 content-block 协议）
+        // 两个都发会重复；这里选 ①（更通用），并在注释里记下 ② 的存在。
+        // 若将来发现有客户端只认 ②，把下面这行换成数组形式即可。
+        if (parsed.reasoning) {
+          frame({ reasoning_content: parsed.reasoning })
+        }
 
         // 正文在确认过截断之后才发。判定是工具调用时不发正文（OpenAI 的 content 为 null）。
         if (!calls && constrained) frame({ content: constrained })
@@ -153,7 +181,7 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
             created,
             model: modelId,
             choices: [],
-            usage: estimateUsage({ promptText, completionText: calls ? "" : full }),
+            usage: fullUsage(estimateUsage({ promptText, completionText: calls ? "" : full })),
             ...(receivedTools !== undefined ? { today_debug_tools: receivedTools } : {}),
           })
         }
