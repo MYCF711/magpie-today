@@ -240,6 +240,29 @@ await t("图像输入支持两种 content 形状", async () => {
   return "messages 与 content 都行"
 })
 
+await t("提示词不含任何产品名（普适化）", async () => {
+  const { buildPrompt } = await import("../src/chat.mjs")
+  const tools = [
+    { type: "function", function: { name: "read", description: "读", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+    { type: "function", function: { name: "web_fetch", description: "取网页", parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } } },
+  ]
+  const p = buildPrompt(
+    [{ role: "system", content: "你是编码助手" }, { role: "user", content: "读 /a.txt" }],
+    { tools, responseFormat: { type: "json_object" } },
+  )
+  // 提示词是给「任何调用方」看的，不能绑定某个具体产品 ——
+  // 一绑定，别人换个客户端就会读到不存在的概念（比如"沙盒"其实是 Today 的）。
+  const banned = ["DSH", "DeepSeek Harness", "Today", "todayai", "magpie", "桌面端", "DeviceInvoke", "script.shell"]
+  const hit = banned.filter((w) => p.includes(w))
+  assert.deepEqual(hit, [], `提示词里不该出现产品名：${hit.join(", ")}`)
+  // 工具表必须随调用方变化，不能写死
+  const A = buildPrompt([{ role: "user", content: "x" }], { tools: [{ type: "function", function: { name: "alpha", parameters: { type: "object", properties: {} } } }] })
+  const B = buildPrompt([{ role: "user", content: "x" }], { tools: [{ type: "function", function: { name: "beta", parameters: { type: "object", properties: {} } } }, { type: "function", function: { name: "gamma", parameters: { type: "object", properties: {} } } }] })
+  assert.ok(/alpha/.test(A) && !/beta|gamma/.test(A), "工具集 A 只该列出 alpha")
+  assert.ok(/beta/.test(B) && /gamma/.test(B) && !/alpha/.test(B), "工具集 B 只该列出 beta+gamma")
+  return `无产品名 · 工具表随调用方变化（${p.length} 字符）`
+})
+
 await t("思考过程：模板与解析", async () => {
   const { outputTemplate, parseTemplate } = await import("../src/template.mjs")
   const tools = [{ type: "function", function: { name: "read", description: "读", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }]

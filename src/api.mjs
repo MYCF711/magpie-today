@@ -14,6 +14,7 @@ import {
   AUTH_HOST,
   CLIENT_CAPABILITIES,
   HOST,
+  PROVIDER_NAME,
   USER_AGENT,
 } from "./constants.mjs"
 
@@ -95,7 +96,7 @@ export function createClient({ getAuth, deviceId, fetchImpl = fetch }) {
     timeout ??= 30_000
     const auth = await getAuth()
     const token = typeof auth === "string" ? auth : auth?.access
-    if (!token) throw new Error("Today 未登录")
+    if (!token) throw new Error(`${PROVIDER_NAME} 未登录`)
     const h = authHeaders(token, deviceId)
     if (body !== undefined) h["content-type"] = "application/json"
     const res = await fetchImpl(`${HOST}${pathname}`, {
