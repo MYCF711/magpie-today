@@ -48,7 +48,19 @@ GET  /v2/messages?conversationId= → 确认终稿
 中文 3 字节/字符，所以中文场景先撞字节限制：实测 348,000 汉字通过、350,000 汉字 413。
 插件按 300,000 字符声明（给最坏情况留余量）。
 
-**④ 切模型是账号级操作。** `PUT /v1/pricing/model-option` 改的是账号的全局档位，
+**④ 采样参数上游不收，能本地做的都做了，做不到的如实忽略。**
+实测把 `temperature` / `max_tokens` / `n` / `stop` / `response_format` 放进请求体，
+五个都 200 且模型行为一字不变（和 `tools` 一样被 schema 丢掉）。所以：
+
+| 参数 | 处理 |
+|---|---|
+| `stop` | ✅ 插件侧截断（多序列取最早出现的） |
+| `max_tokens` | ✅ 插件侧按**估算** token 截断（口径见 `src/tokens.mjs`，不是精确计数） |
+| `response_format` | ✅ 转成提示（实测：加了才给裸 JSON，不加会给围栏加解释） |
+| `temperature` / `top_p` / `seed` 等 | ⚠️ **无法控制，不假装生效** —— 会写进日志告诉你 |
+| `n > 1` | ⚠️ 只返回 1 条 |
+
+**⑤ 切模型是账号级操作。** `PUT /v1/pricing/model-option` 改的是账号的全局档位，
 不是单个请求 —— 也就是说，在 DSH 里切到 `today/glm-5.3`，你自己 Today 桌面端里选的模型
 也会跟着变。这是服务端设计，不是插件的选择。
 
@@ -64,6 +76,8 @@ GET  /v2/messages?conversationId= → 确认终稿
 - **模型切换** —— 两个档位，按请求里的 `model` 自动切（服务端是账号级设置）
 - **额度准** —— 套餐用量与到期时间都来自 `/v1/pricing/status`
 - **多账号** —— magpie 的多账号机制直接可用，每号一份登录态
+- **输出约束** —— `stop` / `max_tokens` / `response_format` 在插件侧落实（上游不收这些字段）
+- **5xx 重试** —— 幂等调用最多试 3 次；4xx 不重试
 
 ---
 

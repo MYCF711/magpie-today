@@ -50,6 +50,7 @@ import { createConversation, listConversationMessages, messageCount, sendToConve
 import { sendOtp, verifyOtp } from "./src/login.mjs"
 import { desktopInstalled, readDesktopCredential } from "./src/desktop.mjs"
 import { buildPrompt, delegatedNames, extractToolCalls, streamTurn } from "./src/chat.mjs"
+import { constrainOutput, unsupportedNotes } from "./src/params.mjs"
 import { errorResponse, nonStreamResponse, streamResponse } from "./src/openai.mjs"
 import { resolveOptionId, staticModels } from "./src/models.mjs"
 
@@ -414,6 +415,9 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             // 用「头 + 水位线」而不是「全史指纹」：后者会让工具结果回合漏命中，
             // 那一回合的历史比上一轮多了一条 assistant(tool_calls)。
             const head = conversationHead(messages, { model: wantOption ?? "", tools })
+            // 传了但我们控制不了的参数：记一笔，日志里说清楚，不假装生效
+            const ignored = unsupportedNotes(body)
+            if (ignored.length) log(`本次忽略这些参数（上游 agent 通道不接受）：${ignored.join(", ")}`)
 
             const slot = await pool.acquire(head, messages)
             let conversationId = null
@@ -451,7 +455,7 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             }
 
             if (!conversationId) {
-              const prompt = buildPrompt(messages, { tools, toolChoice: body.tool_choice })
+              const prompt = buildPrompt(messages, { tools, toolChoice: body.tool_choice, responseFormat: body.response_format })
               if (!prompt.trim()) {
                 return errorResponse(400, "没有可发送的内容", "invalid_request_error")
               }
@@ -493,9 +497,11 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
                   if (ev.type === "done") text = ev.text ?? text
                 }
                 const calls = knownNames.size ? extractToolCalls(text, knownNames) : null
+                // stop / max_tokens 在本地落实（上游不认这两个字段）
+                const text2 = calls ? "" : constrainOutput(text, body)
                 return nonStreamResponse({
                   modelId,
-                  text: calls ? "" : text,
+                  text: text2,
                   toolCalls: calls,
                   promptText,
                 })
@@ -513,6 +519,7 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
               knownNames,
               promptText,
               includeUsage: body.stream_options?.include_usage === true,
+              requestBody: body,
             })
           },
         }

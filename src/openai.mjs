@@ -10,6 +10,7 @@
 // ⚠ usage 是**估算**（上游不回报 token）。见 src/tokens.mjs 的口径说明。
 
 import { argumentsString, extractToolCalls, newCallId } from "./chat.mjs"
+import { constrainOutput } from "./params.mjs"
 import { estimateUsage } from "./tokens.mjs"
 
 function id() {
@@ -55,7 +56,7 @@ export function nonStreamResponse({ modelId, text, toolCalls, created, promptTex
 }
 
 /** SSE 响应。`source` 是一个异步生成器，产出 `{type:"delta",text}` / `{type:"done",text}`。 */
-export function streamResponse({ modelId, source, knownNames, promptText, includeUsage = false }) {
+export function streamResponse({ modelId, source, knownNames, promptText, includeUsage = false, requestBody = {} }) {
   const created = Math.floor(Date.now() / 1000)
   const responseId = id()
   const encoder = new TextEncoder()
@@ -91,6 +92,13 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
         // 工具调用是被「文本协议」模拟的：正文里可能出现那个 JSON。它一次性给全，
         // 所以中途已经当文本流出去了。判定为工具调用时补发 tool_calls 帧，
         // 并把已经流出去的那段正文「收回」—— OpenAI 的语义是 content=null。
+        // stop / max_tokens：上游不认，本地落实。
+        // ⚠ 流式下正文已经一帧帧发出去了，这里只能影响**收尾的 usage 估算**；
+        //   要真正截断得在发帧之前做。所以流式路径的 stop 是"尽力而为"：
+        //   上游本来就一次性给全（不增量），因此下面这段实际能拦住绝大多数情况。
+        const constrained = constrainOutput(full, requestBody)
+        const truncated = constrained !== full
+        full = constrained
         const calls = knownNames?.size ? extractToolCalls(full, knownNames) : null
         if (calls) {
           const openai = toOpenAIToolCalls(calls)
@@ -108,6 +116,8 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
           })
           frame({}, "tool_calls")
         } else {
+          // 截断过 → finish_reason 应该是 "stop"（OpenAI 在命中 stop 序列时也用 stop，
+          // 只有撞 max_tokens 才是 length）。这里不细分，如实给 stop。
           frame({}, "stop")
         }
 

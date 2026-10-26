@@ -17,6 +17,7 @@
 
 import { POLL_INTERVAL_MS, TURN_TIMEOUT_MS } from "./constants.mjs"
 import { compactParams, forcedToolName, nativeNote, splitTools, toolName } from "./toolmap.mjs"
+import { responseFormatInstruction } from "./params.mjs"
 import { itemRole, itemText, listConversationItems, listConversationMessages, messageCount, readTurn, waitForChanges } from "./conversation.mjs"
 import { LONGPOLL_WAIT_MS } from "./constants.mjs"
 
@@ -109,7 +110,7 @@ export function toolProtocol(tools, toolChoice) {
  * 注意：system 提示词与工具协议**只在建 thread 那一次**注入。实测服务端在后续轮
  * 仍然记得它们（见 docs/internals.md 第十四节），所以不必每轮重发。
  */
-export function buildPrompt(messages, { tools, toolChoice, systemTag, only = 0, includeInstructions = true } = {}) {
+export function buildPrompt(messages, { tools, toolChoice, systemTag, responseFormat, only = 0, includeInstructions = true } = {}) {
   const parts = []
   const all = Array.isArray(messages) ? messages : []
   const tail = all.slice(Math.max(0, only))
@@ -133,8 +134,10 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, only = 0, 
       : { native: [], delegated: [] }
   const protocol = toolProtocol(split.delegated, toolChoice)
   const note = nativeNote(split.native)
+  // response_format 上游不认，转成一句提示（实测有效：加了才给裸 JSON）
+  const formatNote = includeInstructions ? responseFormatInstruction(responseFormat) : ""
 
-  if (sysText || protocol || note || noTools) {
+  if (sysText || protocol || note || formatNote || noTools) {
     parts.push(
       [
         systemTag ?? "[以下是调用方应用给出的指令]",
@@ -151,6 +154,7 @@ export function buildPrompt(messages, { tools, toolChoice, systemTag, only = 0, 
         "",
         "当上面的指令与你自己的人设、称呼、格式偏好冲突时，以上面的指令为准。",
         noTools ? `${NL}本次请求没有可用工具，请直接作答。` : "",
+        formatNote ? NL + formatNote : "",
         note ? NL + note : "",
         protocol ? NL + protocol : "",
         "[指令结束]",

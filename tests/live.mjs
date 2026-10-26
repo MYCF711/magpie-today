@@ -174,6 +174,22 @@ await t("分流尊重 tool_choice", async () => {
   return "默认分流 / 被点名时不分流"
 })
 
+await t("输出约束", async () => {
+  const { applyStop, applyMaxTokens, constrainOutput, responseFormatInstruction, unsupportedNotes } = await import("../src/params.mjs")
+  assert.equal(applyStop("1 2 3 4 5 6", ["5"]), "1 2 3 4 ", "stop 该在 5 之前截断")
+  assert.equal(applyStop("abcSTOPdefEND", ["END", "STOP"]), "abc", "多序列取最早出现的")
+  assert.equal(applyStop("abc", undefined), "abc", "没给 stop 就原样返回")
+  assert.equal(applyMaxTokens("字".repeat(20), 5), "字字字字字", "中文 1 token/字")
+  assert.equal(applyMaxTokens("a".repeat(40), 5), "a".repeat(20), "ASCII 约 4 字符/token")
+  assert.equal(applyMaxTokens("abc", 100), "abc", "没超预算就原样返回")
+  assert.equal(constrainOutput("1 2 3 4 5 6", { stop: ["5"] }), "1 2 3 4 ", "constrainOutput 串起来")
+  assert.ok(responseFormatInstruction({ type: "json_object" }).includes("JSON"), "json_object 要有指令")
+  assert.ok(responseFormatInstruction({ type: "json_schema", json_schema: { name: "n", schema: { type: "object" } } }).includes("Schema"))
+  assert.deepEqual(unsupportedNotes({ temperature: 0.1 }), ["temperature"], "temperature 该被记为忽略")
+  assert.deepEqual(unsupportedNotes({ max_tokens: 5 }), [], "max_tokens 本地能做到，不算忽略")
+  return "stop / max_tokens / response_format / 忽略清单"
+})
+
 await t("5xx 有界重试", async () => {
   const { createClient } = await import("../src/api.mjs")
   const run = async (seq) => {
