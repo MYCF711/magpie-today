@@ -161,13 +161,21 @@ await t("分流尊重 tool_choice", async () => {
     { type: "function", function: { name: "web_fetch", description: "取网页" } },
     { type: "function", function: { name: "read_file", description: "读文件" } },
   ]
+  // 分流默认关闭（TODAY_NATIVE_SPLIT=1 才开）—— 主人要求「默认走工具，不碰沙盒」
+  delete process.env.TODAY_NATIVE_SPLIT
+  const off = splitTools(T)
+  assert.deepEqual(off.native, [], "默认不该分流，全部走工具")
+  assert.deepEqual(off.delegated.map((t) => t.function.name).sort(), ["read_file", "web_fetch"])
+
+  process.env.TODAY_NATIVE_SPLIT = "1"
   const a = splitTools(T)
-  assert.deepEqual(a.native.map((x) => x.name), ["web_fetch"], "默认该把 web_fetch 分流走")
+  assert.deepEqual(a.native.map((x) => x.name), ["web_fetch"], "开启后该把 web_fetch 分流走")
   assert.deepEqual(a.delegated.map((t) => t.function.name), ["read_file"])
   const b = splitTools(T, { forced: "web_fetch" })
   assert.deepEqual(b.native, [], "被 tool_choice 点名时不能再分流走")
   assert.deepEqual(b.delegated.map((t) => t.function.name).sort(), ["read_file", "web_fetch"])
-  return "默认分流 / 被点名时不分流"
+  delete process.env.TODAY_NATIVE_SPLIT
+  return "默认不分流 / 开启后分流 / 被点名时不分流"
 })
 
 await t("输出约束", async () => {

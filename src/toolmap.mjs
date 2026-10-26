@@ -42,6 +42,20 @@ export const NATIVE_EQUIVALENTS = new Map([
   ["google_search", { today: "WebSearch", note: "联网搜索" }],
 ])
 
+/**
+ * 是否启用「等价分流」。
+ *
+ * **默认关**（按主人要求：默认走工具，不碰沙盒/设备能力）。
+ *
+ * 分流的意思是把 `web_fetch` / `web_search` 这类工具从模板里摘掉，
+ * 让它用自己的原生能力做。实测确实能省一轮往返，但有两个问题：
+ *   1. 它可能改用沙盒（`Bash` / `DeviceInvoke`）去做，那就跑到别的机器上了
+ *   2. 结果不回给调用方，调用方无法审计它到底做了什么
+ *
+ * 所以要开就显式开：`TODAY_NATIVE_SPLIT=1`。
+ */
+const nativeSplitEnabled = () => process.env.TODAY_NATIVE_SPLIT === "1"
+
 /** 取工具名（兼容 `{type,function:{name}}` 与 `{name,...}` 两种形状）。 */
 export function toolName(t) {
   const n = t?.function?.name ?? t?.name
@@ -61,7 +75,7 @@ export function splitTools(tools, { forced = null } = {}) {
   for (const t of Array.isArray(tools) ? tools : []) {
     const name = toolName(t)
     if (!name) continue
-    const eq = NATIVE_EQUIVALENTS.get(name.toLowerCase())
+    const eq = nativeSplitEnabled() ? NATIVE_EQUIVALENTS.get(name.toLowerCase()) : null
     // ⚠ 被 tool_choice 点名的工具**不能**分流走：调用方在说"这一轮必须产生对它的调用"，
     //   替它自己做等于违反了它的指令。此时按普通工具处理，交给模型输出 tool_calls。
     if (eq && name.toLowerCase() !== forcedName) native.push({ name, ...eq })
