@@ -1,6 +1,6 @@
 # magpie-today-plugin · 当前状态
 
-> 更新于 2026-10-26 16:05
+> 更新于 2026-10-26 16:55
 
 ## 用户原话
 > 参考之前的反代项目经验，freebuff的cli，jet hub。反代这个软件的模型，要求你完全遵从模板仓库做magpie的插件，我已经登录了一个号，你可以获取这个号的本地凭证
@@ -59,6 +59,39 @@ chat 与 usage 仍 200。桌面端读取只剩「一键导入」那条可选登�
 
 三条登录路径现在是：① 手机验证码（不需要桌面端，**默认推荐**）② 粘贴 session ③ 桌面端导入（可选）。
 `magpie plugin login today` 的菜单已确认是这三条。
+
+## 16:55 追加：会话改走 v3（推翻了自己 15:45 的结论）
+
+三轮实测把之前那条「复用 thread」的路彻底证伪：
+
+1. **`body.threadId` 被服务端忽略** —— 两轮请求带同一个 threadId，返回的是两个不同 threadId。
+   之前以为「复用 thread 所以记得上文」纯属误读：真正的原因是**所有 thread 共享账号的
+   Main Chat**，上下文本来就是会话级的。后果是插件里两个不相关请求会互相看见。
+2. **正解是 `POST /v3/conversations`**（要 `Idempotency-Key` 头、**不能发 body**），
+   拿到一个隔离会话；`POST /v3/messages` 往里追加；`GET /v2/messages?conversationId=` 读。
+   两会话互不可见（随机串验证：B 答「没有」）。
+3. **`/v2/messages` 返回整段历史**，一条用户消息还引出多条 assistant（含 `"Worked on it"`
+   这种中间态）。只取最后一条 assistant 会把**上一轮终稿**当成本轮答案 —— 我因此拿到过
+   500ms 的假响应。改为按条数切水位线 `readTurn(rows, afterCount)`。
+4. **`/v3/…/message-changes?afterSequence=&waitMs=` 是真长轮询**（空闲 8s 的请求等满 8086ms），
+   用它替代 250ms 轮询。
+5. **正文里混进过 UI 进度气泡**（"Searching the web…"）：那些 part 的
+   `messageType === "turn"`，正文永远是 `"text"`。已按类型过滤，并有免费单测。
+
+顺带做了：
+- **工具等价分流**：`web_fetch`/`web_search`/`read_page` 这类 Today 自己就会做的事，
+  从工具协议里摘掉、写成一句「你自己做」，不占调用方上下文也不多跑一轮（实测它真去抓/搜了）。
+  体积：3 工具 607 字符 → 分流后 496 字符。
+- **无状态声明**：压掉它自带的跨会话 Memory（措辞试过三种，见 internals 第十四节）。
+- **usage 估算**：上游不回报 token；口径在 `src/tokens.mjs`，`estimated: true` 标明是估值。
+- `tests/conversation.mjs` 新增；`tests/live.mjs` 加「过滤进度气泡」免费项。
+
+**速度**（同机同提示，各 4 次中位）：每轮新会话 **2.98s** → 续用 **2.61s**；
+原生直连对照 **0.72s**。早期版本是 4.42s（轮询 700ms）。
+
+**没解决的两件事**（都是上游性质，不是实现问题）：
+- 正文不增量 ⇒ 流式是形状上的，首字 ≈ 总耗时（三通道都测过，internals 第十三节）。
+- 与原生仍差 ~1.9s，那是 Today 的 agent turn 本身；直连它的 API 也一样。
 
 ## 下一步（唯一的下一动作）
 把仓库 init + commit，然后问主人要不要建 GitHub 远端（`MYCF711/magpie-today`）并推上去 ——

@@ -148,6 +148,25 @@ await t("toolparse", async () => {
   return "裸 JSON / 围栏 / 未知函数名 / 空数组"
 })
 
+await t("过滤进度气泡", async () => {
+  const { readTurn } = await import("../src/conversation.mjs")
+  // 形状照抄实测：一条 assistant 里既有 turn 气泡又有 text 正文
+  const rows = [
+    { role: "user", isFinal: true, messages: [{ messageType: "text", content: { text: "查一下" } }] },
+    {
+      role: "assistant",
+      isFinal: true,
+      messages: [
+        { messageType: "turn", content: { text: ["Searched the web"], toolCallStatus: "completed" } },
+        { messageType: "text", content: { text: "1.99.1" } },
+      ],
+    },
+  ]
+  const r = readTurn(rows, 0)
+  assert.equal(r.text, "1.99.1", `正文应只有 text part，实际 ${JSON.stringify(r.text)}`)
+  return "turn 气泡被滤掉，只剩正文"
+})
+
 // 要花额度的项
 
 await t("chat", async () => {

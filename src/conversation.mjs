@@ -131,10 +131,18 @@ export function readTurn(rows, afterCount) {
   if (!hasUser) return null
   const assistants = tail.filter((m) => m?.role === "assistant")
   if (assistants.length === 0) return null
-  // 终稿取最后一条 isFinal 的；正文拼起来（可能分多个 part）
+  // 终稿取最后一条 isFinal 的；正文只拼 `messageType === "text"` 的 part。
+  //
+  // ⚠ 一条 assistant 消息里除了正文还有**进度气泡**：`messageType === "turn"`，
+  //   content 形如 `{"text":["Searched the web"],"toolCallStatus":"completed","toolCalls":[…]}`。
+  //   把它拼进来，用户会看到 "Searching the webSearched the web1 web page3.15.2" 这种垃圾。
+  //   实测（2026-10-26）：正文永远是 messageType=text，气泡永远是 turn。
   const finals = assistants.filter((m) => m.isFinal === true)
   const pick = finals.length ? finals[finals.length - 1] : assistants[assistants.length - 1]
-  const text = (pick.messages ?? []).map((p) => p?.content?.text ?? "").join("")
+  const text = (pick.messages ?? [])
+    .filter((p) => (p?.messageType ?? "text") === "text")
+    .map((p) => (typeof p?.content?.text === "string" ? p.content.text : ""))
+    .join("")
   return { text, isFinal: pick.isFinal === true, count: list.length }
 }
 
@@ -178,11 +186,19 @@ export async function waitForChanges(client, conversationId, { afterSequence = 0
   }
 }
 
-/** v3 item 的正文（`body.content.parts[].text`）。 */
+/**
+ * v3 item 的正文。
+ *
+ * ⚠ 只取 `type === "text"` 的 part：其余（`structured` 之类的反应/气泡）不是正文。
+ * 实测 v3 会把进度气泡整条过滤掉（直接不出现），但正文仍要按 type 判。
+ */
 export function itemText(item) {
   const parts = item?.body?.content?.parts
   if (!Array.isArray(parts)) return ""
-  return parts.map((p) => (typeof p?.text === "string" ? p.text : "")).join("")
+  return parts
+    .filter((p) => (p?.type ?? "text") === "text")
+    .map((p) => (typeof p?.text === "string" ? p.text : ""))
+    .join("")
 }
 
 /** v3 item 的角色。 */
