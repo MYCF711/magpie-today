@@ -30,11 +30,12 @@ node tools/agent-persona.mjs --show   # 看 Today 侧人设（清空后才轮到
 node tools/read-session.mjs    # 打印本机 session token（凭据，别外传）
 ```
 
-装进 magpie（会立即生效，不用重启）：
+装进 magpie（**改完源码必须重新 add 一次** —— magpie 不热重载）：
 ```bash
-magpie plugin add "D:\主工作区\magpie-today-plugin"
-printf '1\n' | magpie plugin login today     # 1 = 从本机桌面端导入
+magpie plugin add "D:\主工作区\magpie-today-plugin"    # 首次安装 / 每次改完源码
+printf '1\n' | magpie plugin login today               # 1 = 手机验证码（不需要桌面端）
 magpie plugin list | grep -A2 today
+node tests/gateway.mjs                                 # 经网关验收
 ```
 
 ## 已知陷阱
