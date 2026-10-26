@@ -77,17 +77,21 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
       frame({ role: "assistant", content: "" })
 
       try {
+        // ⚠ 先攒、后发，不要边收边发。
+        //
+        // 原因：`stop` / `max_tokens` 是插件侧实现的（上游不收这两个字段），
+        // 而流式一旦把正文帧发出去了就收不回来 —— 截断就成了空话。
+        // 上游本来也不吐增量（实测见 docs/internals.md 第十三节：只在一帧里给全），
+        // 所以「攒着」在当前通道上零损失；等它将来真开始分片，再按停止序列边界做增量截断。
         let full = ""
-        let streamed = ""
         for await (const ev of source) {
           if (ev.type === "delta" && ev.text) {
             full += ev.text
-            streamed += ev.text
-            frame({ content: ev.text })
           } else if (ev.type === "done") {
             full = ev.text ?? full
           }
         }
+        const streamed = ""
 
         // 工具调用是被「文本协议」模拟的：正文里可能出现那个 JSON。它一次性给全，
         // 所以中途已经当文本流出去了。判定为工具调用时补发 tool_calls 帧，
@@ -100,6 +104,8 @@ export function streamResponse({ modelId, source, knownNames, promptText, includ
         const truncated = constrained !== full
         full = constrained
         const calls = knownNames?.size ? extractToolCalls(full, knownNames) : null
+        // 正文在确认过截断之后才发。判定是工具调用时不发正文（OpenAI 的 content 为 null）。
+        if (!calls && constrained) frame({ content: constrained })
         if (calls) {
           const openai = toOpenAIToolCalls(calls)
           openai.forEach((tc, i) => {

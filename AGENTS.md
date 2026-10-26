@@ -47,6 +47,10 @@ magpie plugin list | grep -A2 today
 - **载荷上限有两条，别只记一条**：`body.text` ≤ 1,000,000 **字符**（超了 503）、
   整个 JSON 体 ≤ 1 MiB = 1,048,576 **字节**（超了 413）。中文 3 字节/字符 ⇒ 中文先撞字节这条：
   实测 348,000 汉字通过、350,000 汉字 413。旧文档的「17 万字符」是错的，已更正。
+- **magpie 不热重载插件源码**：改完必须 `magpie plugin add "<插件目录>"` 重新注册再测网关，
+  否则测的是旧代码。`plugin off/on <provider id>` 不行（它认包名不认 provider id）。
+- **magpie 的 provider 路径永远要求流式响应**，`stream:false` 也会报 `did not stream`。
+  非流式形状只在直连插件时有意义。
 - 抓包的根证书用完就摘（MITM CA 留在根存储里等于给全机 HTTPS 开后门）。方法见 docs/internals.md。
 - **`/v2/messages` 返回的是整个会话的全部历史**，不是本轮。一条用户消息还会引出多条
   assistant 记录（有 `"Worked on it"` 这类中间态）。只取最后一条 assistant 会把**上一轮的终稿**

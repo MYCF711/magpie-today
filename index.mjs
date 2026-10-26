@@ -383,6 +383,23 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
             } catch {
               return errorResponse(400, "请求体不是合法 JSON", "invalid_request_error")
             }
+            // 排障：如果调用方在最后一条消息里写了这个哨兵，就把**插件实际收到的 body 字段**
+            // 原样回给它。用来判断「参数是被上游剥掉了，还是插件没处理」。
+            // 正常调用不会触发（没人会写这串标记）。
+            const SENTINEL = "[[TODAY_BODY_KEYS]]"
+            if (rawBody.includes(SENTINEL)) {
+              return new Response(
+                JSON.stringify({
+                  id: "chatcmpl-probe",
+                  object: "chat.completion",
+                  created: Math.floor(Date.now() / 1000),
+                  model: "probe",
+                  choices: [{ index: 0, message: { role: "assistant", content: `收到的字段：${Object.keys(body).join(",")}` }, finish_reason: "stop" }],
+                  usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+                }),
+                { status: 200, headers: { "content-type": "application/json" } },
+              )
+            }
 
             // ── 档位切换（账号级设置，不是 per-request）──
             const wantOption = resolveOptionId(body.model)

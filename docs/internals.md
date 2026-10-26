@@ -616,3 +616,71 @@ GET …/message-changes?afterSequence=<cursor>&limit=50&waitMs=25000
 | `GET /v2/messages`、长轮询 | 天然幂等 |
 
 4xx 不重试（参数/权限错了，重发还是错）。次数有上限，用尽后如实返回最后一次的状态码。
+
+---
+
+## 十七、magpie 永远要流式（以及由此引出的截断 bug）
+
+### 17.1 现象
+
+经网关发 `stream: false` 的请求，拿到的却是 magpie 的报错：
+
+```
+Today did not stream: unexpected reply: {"id":"chatcmpl-…","object":"chat.completion",…}
+```
+
+**magpie 的 provider 路径永远期望插件返回流式响应**，即使调用方写的是 `stream: false`。
+非流式形状只在「直接调插件」（比如 `tests/fetch.mjs`）时才有意义。
+
+顺带这个报错本身很好用 —— 它会把插件返回的响应体原样带出来，
+所以我把一条「哨兵探针」留着：请求里出现 `[[TODAY_BODY_KEYS]]` 时，
+插件直接把**它实际收到的 body 字段名**作为响应返回。
+
+### 17.2 它查出了什么
+
+发一条带全套参数的请求，回显是：
+
+```
+收到的字段：max_tokens, messages, model, response_format, stop, stream, stream_options, temperature
+```
+
+结论：
+- `stop` / `max_tokens` / `reply_format` / `temperature` **都真的到达了插件** —— 不是被 magpie 剥掉的；
+  之前 `stop` 经网关不生效，原因在插件自己（见下）。
+- **`n` 不在列表里** —— 被 magpie 自己消费掉了（它按 n 去发多次）。
+- 所以「参数没生效」要分两种情况查：上游丢弃（Today 的 schema）vs 中间层剥掉（magpie）vs 插件没做。
+
+### 17.3 由此发现的真 bug
+
+`streamResponse` 原来是**边收边发**：收到一个 delta 就立刻 `frame({content})` 发出去，
+最后才做 `constrainOutput`。但正文已经流出去了，截断就成了空话 ——
+明明 `stop` 已经到达插件，用户却看到完整正文。
+
+修法：**先攒、后发**。上游本来也不吐增量（第十三节），所以「攒着」在当前通道上零损失；
+等它将来真开始分片，再按停止序列边界做增量截断。
+
+修完实测：
+
+| 路径 | `stop:["5"]` 的结果 |
+|---|---|
+| 直连插件（非流式） | `"1 2 3 4 "` ✅ |
+| 插件流式 | `"1 2 3 4 "` ✅（修之前是完整的 `1 2 3 4 5 6 7 8 9 10`） |
+| 经 magpie 网关 | `"1 2 3 4 "` ✅ |
+
+### 17.4 一条操作教训
+
+**magpie 不热重载插件源码。** 我改了代码、直接打网关，测出来一直是旧行为 ——
+排查了很久才想到看进程启动时间：`magpie-windows-amd64.exe` 从 16:46 起来后就没重启过，
+后面所有改动都没进内存。
+
+重新加载的办法（不必重启整个 magpie）：
+
+```bash
+magpie plugin add "D:\主工作区\magpie-today-plugin"   # 重新注册 = 重新 import
+```
+
+`plugin off/on today` **不行** —— 它认的是插件包名（`D:\主工作区\magpie-today-plugin`），
+不是 provider id（`today`），会报 `no plugin "today"`。
+
+⚠ 这条对以后的验证很关键：**改完源码，必须 `plugin add` 一次再测网关**。
+否则测的是旧代码，一切结论都不可信。
