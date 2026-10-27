@@ -12,6 +12,11 @@
 思考      有（它自己写的推理摘要，见下）
 ```
 
+> **改代码 / 发版本之前**：先看 [AGENTS.md](./AGENTS.md) —— 按「你在哪一步」给阅读顺序，
+> 外加本插件全部实测陷阱（正文不增量、会话必须 v3 隔离、两条载荷上限、attachments
+> 五字段…）。交付与发版逐条走 [CHECKLIST.md](./CHECKLIST.md) 的两张表。
+> 发布是**七步**，`git push` 只是第 4 步。
+
 ---
 
 ## 功能
@@ -163,7 +168,7 @@ Today 没有这个功能。重置卡是邀请好友换的，不是签到换的�
 
 | 来源 | 用在哪 |
 |---|---|
-| [magpie-plugin-template](https://github.com/deepseek-ai/magpie-plugin-template) | 插件骨架、九项钩子契约、README 结构 |
+| [magpie-plugin-scaffold](https://github.com/MYCF711/magpie-plugin-scaffold) | 插件骨架、九项钩子契约、README 结构 |
 | `HOOKS.md`（从 magpie 二进制提取） | `auth.checkin` / `auth.usage` 的字段口径 |
 | Today 桌面端 `app.asar` / `prod.asar` | 协议取证：端点、参数、载荷上限、成长体系接口 |
 

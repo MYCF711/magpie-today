@@ -33,7 +33,6 @@
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { startSelfRegister } from "./src/self-register.mjs"
 import { ICON_DATA_URI } from "./src/icon.mjs"
 import { readUsage, readInvite, readResets } from "./src/growth.mjs"
 import {
@@ -55,17 +54,6 @@ import { constrainOutput, unsupportedNotes } from "./src/params.mjs"
 import { parseTemplate, templateToolNames } from "./src/template.mjs"
 import { errorResponse, nonStreamResponse, streamResponse } from "./src/openai.mjs"
 import { resolveOptionId, staticModels } from "./src/models.mjs"
-
-const REGISTRY_ENTRY = {
-  package: "today-for-magpie",
-  name: "Today",
-  providers: [PROVIDER],
-  community: true,
-  summary: {
-    en: "Today's (todayai.cn) two model tiers in magpie: phone-code sign-in with no desktop client needed; its agent channel translated into OpenAI chat completions with streaming, tool calls and reasoning. Supports the native (per-tool) presentation only, not PTC.",
-    zh: "把 Today（todayai.cn）的两个模型档位接进 magpie：手机验证码登录，不需要桌面端；agent 通道翻译成 OpenAI 形状，支持流式、工具调用与思考过程。只支持原生（逐工具）呈现，不支持 PTC。",
-  },
-}
 
 /**
  * 每个账号当前已生效的档位，避免每个请求都发一次 PUT。
@@ -168,7 +156,6 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
     } catch {}
   }
 
-  startSelfRegister(REGISTRY_ENTRY, { configDir, log })
 
   /** 设备身份：自己生成、持久化在 magpie 配置目录；只有显式从桌面端导入时才带上桌面端认得的那个。 */
   const deviceId = (auth) => auth?.deviceId || persistentDeviceId(configDir)
@@ -725,4 +712,4 @@ export const TodayAuthPlugin = async ({ client, directory }) => {
   }
 }
 
-export const _internal = { REGISTRY_ENTRY, appliedOption, staticModels, stripPersona }
+export const _internal = { appliedOption, staticModels, stripPersona }

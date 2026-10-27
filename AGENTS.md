@@ -1,17 +1,62 @@
-# magpie-today-plugin · 项目规范
+# AGENTS.md —— 给 AI 执行者的入口
 
-## 这是什么
+> 人类请看 [README](./README.md)。这份只回答两件事：**你现在该读哪一份**、
+> **忘了哪一条会静默出错**。
+>
+> 第三节往下是本仓库原有的项目规范与实测陷阱，一条没删 —— 本次只是把它组织进
+> 「按阶段取用」的结构，并补上原来缺的**发布七步**。
+
+---
+
+## 一、先定位你在哪一步
+
+| 你在做什么 | 必读 | 做完的判据 |
+|---|---|---|
+| **第一次碰这个仓库** | 下面第三节「这是什么」+ 第四节「三条会改变能力的实测事实」 | 能说清「流式是形状上的」与「会话必须用 v3 隔离」 |
+| **改登录 / 设备身份** | 第五节「独立性纪律」 | `node tests/independent.mjs` 绿；把 `TodayCN.exe` 全停也能发消息 |
+| **改协议 / 会话 / 工具调用** | 第六节「硬规则」+ 第八节「已知陷阱」 | 对应测试跑过（会长额度的项要说明） |
+| **改完源码要装进 magpie** | 第七节「怎么跑」里的 `magpie plugin add` | magpie **不热重载**，必须重新 add |
+| **代码写完，准备交付** | [CHECKLIST.md](./CHECKLIST.md) 的 **A 表** | A 表全勾 + check 脚本退出 0 |
+| **要发版本** | 第二节（发布七步） | CHECKLIST B 表全勾 + 四条验证 |
+
+---
+
+## 二、要发版本：七步，一步不能少
+
+> ⚠ **`git push` 只是第 4 步。** 只 push 不发布，GitHub 右侧会一直写「暂无发布版本」，
+> npm 上的用户永远停在旧版本 —— 而本地一切看起来都对。
+
+```
+第 0 步  写 CHANGELOG（顶部一版一节，一条一行，说用户能感知的变化）
+第 1 步  bump version（同版本重打包会命中 bun 缓存，装了等于没装）
+第 2 步  npm pack --dry-run（README / CHANGELOG / docs / AGENTS / CHECKLIST 都在包里？）
+第 3 步  提交
+第 4 步  git push origin main（推别的分支不算 —— git 源检测看默认分支 HEAD）
+第 5 步  npm run publish:npm（包内 name 若有大写标题，裸 npm publish 会被拒）
+第 6 步  git tag v<version> && git push origin v<version>，再建 Release
+第 7 步  四条验证：npm 版本 / tarball 内容 / magpie plugin list / Release 在
+```
+
+完整规矩（含 magpie 怎么发现新版本、npm 源与 git 源的区别）见
+[脚手架 UPDATING.md](https://github.com/MYCF711/magpie-plugin-scaffold/blob/main/UPDATING.md)。
+
+---
+
+## 三、这是什么
+
 把 Today（todayai.cn）的两个模型档位接进 magpie 的插件。**手机验证码登录，不依赖桌面端**，
 把它的 **agent 会话通道**翻译成 OpenAI Chat Completions（含流式与工具调用）。
 
-## 三条会改变能力的实测事实（改代码前先知道）
+## 四、三条会改变能力的实测事实（改代码前先知道）
+
 - **正文不增量**：上游只在终稿时一次给全，所以「流式」是形状上的，首字≈总耗时。
 - **会话用 v3**：`POST /v1/messages` 的 `body.threadId` **被服务端忽略**（每次新建 thread），
   而所有 thread 共享账号的 Main Chat ⇒ 会串味。隔离靠 `POST /v3/conversations`。
   细节与踩坑见 `src/conversation.mjs` 顶部注释。
 - **切模型是账号级**：`PUT /v1/pricing/model-option` 会改用户在桌面端选的模型。
 
-## 独立性纪律（改代码前先读）
+## 五、独立性纪律（改代码前先读）
+
 - **插件运行时不许依赖 Today 桌面端。** `src/desktop.mjs` 只能**动态 import**
   （在「从桌面端导入」那条可选登录路径里），不许有顶层静态引用 —— 那条被
   `tests/independent.mjs` 静态检查拦着。
@@ -21,7 +66,8 @@
   `plugin-auth.json` → 桌面端（兜底）。别在测试里直接读桌面端。
 - 改完跑一次 `node tests/independent.mjs`；要最强证据就把 `TodayCN.exe` 全停掉再跑。
 
-## 硬规则（会改变行为的）
+## 六、硬规则（会改变行为的）
+
 - **不许改 `src/constants.mjs` 里的 `toolProtocol` 措辞**而不重跑 `node tests/live.mjs tools`。
   那套「文本转换器」的口吻是工具调用能成立的原因，不是文风。
 - 任何声明的数字（上下文、输出上限、延迟）**必须带口径**。没实测的写「未验证」，不许估。
@@ -29,7 +75,8 @@
 - 改完必须跑：`node tests/live.mjs`（纯函数项免费，发消息项花额度）。
 - `_capture/` `_probe/` `_asar/` 是勘查产物，不发布、不提交（见 .gitignore）。
 
-## 怎么跑
+## 七、怎么跑
+
 ```bash
 node tests/live.mjs            # 全量自测（会真的发消息，消耗账号额度）
 node tests/live.mjs notool     # 只跑不花钱的项
@@ -43,6 +90,7 @@ node tools/read-session.mjs    # 打印本机 session token（凭据，别外传
 ```
 
 装进 magpie（**改完源码必须重新 add 一次** —— magpie 不热重载）：
+
 ```bash
 magpie plugin add "D:\主工作区\magpie-today-plugin"    # 首次安装 / 每次改完源码
 printf '1\n' | magpie plugin login today               # 1 = 手机验证码（不需要桌面端）
@@ -50,7 +98,8 @@ magpie plugin list | grep -A2 today
 node tests/gateway.mjs                                 # 经网关验收
 ```
 
-## 已知陷阱
+## 八、已知陷阱
+
 - **PowerShell 解 DPAPI 必须先 `Add-Type -AssemblyName System.Security`**，
   否则报 `TypeNotFound`。见 `src/desktop.mjs`。
 - `X-Client-Platform` 有两套值：打 API 用 `windows-client`，渲染进程发 CORS 预检也用这个；
@@ -78,7 +127,14 @@ node tests/gateway.mjs                                 # 经网关验收
   记忆是它的既有能力，压制等于砍功能）。要恢复压制：设 `TODAY_NO_MEMORY=1`。
   那条压制语句的措辞是实测过的，换法就不灵（见 docs/internals.md 第十四节）。
 
-## 目录约定
+## 九、目录约定
+
 - `src/` 一个关注点一个文件；`index.mjs` 只做九项钩子的装配，不放实现。
 - `docs/internals.md` 是**证据与决策**的所在：协议取证、被否掉的方案、未验证项。
   改行为之前先读它，改完把新的证据补回去。
+
+## 十、这份文件的维护规矩
+
+1. 任何一次「不报错、要几小时才找到」的坑，收工前加进第八节（症状 → 判据 → 出处）。
+2. 判据要能当场验证（命令、字段、界面现象），写不成判据的是感想。
+3. 新增一份文档，在第一节的「必读」里给它一个位置。
