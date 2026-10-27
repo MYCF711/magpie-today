@@ -1,6 +1,6 @@
 {
   "name": "today-for-magpie",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Today (todayai.cn) models in magpie. Phone-code sign-in (no desktop client needed); its agent channel turned into OpenAI chat completions with streaming, tool calls, reasoning and image input.",
   "type": "module",
   "main": "./index.mjs",
