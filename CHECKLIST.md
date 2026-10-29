@@ -78,8 +78,8 @@
       判据：package.json 的 version 变了
 □ 第 2 步 · npm pack --dry-run
       判据：清单里有 README.md / CHANGELOG.md / docs / AGENTS.md / CHECKLIST.md
-□ 第 3 步 · 提交
-□ 第 4 步 · git push origin main（推别的分支不算）
+□ 第 3 步 · 提交并推功能分支（不是 main）
+□ 第 4 步 · PR 的 rules 全绿后合并（禁止直接推 main；本机 live 测试另按 AGENTS 跑）
 □ 第 5 步 · npm publish —— **本插件不走 npm，跳过**（哪天要走，先 `npm view today-for-magpie version` 查撞名）
 □ 第 6 步 · tag + Release
       命令：git tag v<version> && git push origin v<version>

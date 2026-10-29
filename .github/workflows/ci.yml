@@ -1,0 +1,36 @@
+name: check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: plugin
+      - uses: actions/checkout@v4
+        with:
+          repository: MYCF711/magpie-plugin-scaffold
+          path: scaffold
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 供应商插件规定
+        working-directory: plugin
+        run: node ../scaffold/scripts/check.mjs .
+      - name: 测试范围说明
+        working-directory: plugin
+        run: |
+          echo "本仓库 tests/ 需要真实 Today 凭据且会消耗额度，CI 不伪造通过；"
+          echo "PR 合并前仍须按 AGENTS.md 在本机跑 tests/live.mjs notool 及受影响测试。"
+      - name: 打包面预演
+        working-directory: plugin
+        run: npm pack --dry-run
