@@ -42,20 +42,19 @@ curl -s "https://usemagpie.ai/api/latest?channel=stable" | grep -o '"version":"[
 
 ---
 
-## 二、要发版本：七步，一步不能少
+## 二、要发版本：功能分支 + PR 门禁
 
-> ⚠ **`git push` 只是第 4 步。** 只 push 不发布，GitHub 右侧会一直写「暂无发布版本」，
-> npm 上的用户永远停在旧版本 —— 而本地一切看起来都对。
+> ⚠ **禁止直接推 main。** 本插件走 git 源，用户跟随默认分支 HEAD；未验证提交会直接抵达用户。
 
 ```
-第 0 步  写 CHANGELOG（顶部一版一节，一条一行，说用户能感知的变化）
-第 1 步  bump version（同版本重打包会命中 bun 缓存，装了等于没装）
-第 2 步  npm pack --dry-run（README / CHANGELOG / docs / AGENTS / CHECKLIST 都在包里？）
-第 3 步  提交
-第 4 步  git push origin main（推别的分支不算 —— git 源检测看默认分支 HEAD）
-第 5 步  npm run publish:npm（包内 name 若有大写标题，裸 npm publish 会被拒）
-第 6 步  git tag v<version> && git push origin v<version>，再建 Release
-第 7 步  四条验证：npm 版本 / tarball 内容 / magpie plugin list / Release 在
+第 0 步  从最新 main 起功能分支
+第 1 步  写 CHANGELOG + bump version
+第 2 步  合规检查 + 本机测试 + npm pack --dry-run
+第 3 步  提交并推功能分支
+第 4 步  PR 的 rules 检查全绿后合并（本机 live 测试按 AGENTS 要求另跑）
+第 5 步  回到与 origin/main 一致的提交；本插件不走 npm
+第 6 步  给已合并提交打 tag 并建 Release
+第 7 步  验证 magpie commit 与 Release；若日后发 npm，再验版本与 tarball
 ```
 
 完整规矩（含 magpie 怎么发现新版本、npm 源与 git 源的区别）见
