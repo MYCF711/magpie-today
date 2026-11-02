@@ -19,7 +19,7 @@
   Windows 与 Linux 两版 asar 都解包对过，接口面一致（357 个 URL 路径，无 LLM 端点）。
 
 ## 未完成 / 阻塞
-- **没有 GitHub 远端**：仓库只在本机 `D:\主工作区\magpie-today-plugin`，尚未 init/commit，也没有 push。
+- **没有 GitHub 远端**：仓库只在本机 `<WORKSPACE>\magpie-today-plugin`，尚未 init/commit，也没有 push。
   要发 npm 或让别人 `magpie plugin add github:...` 需要先做这一步。
 - **在用户的 magpie 路由里没有 group**：`providers.json` 的 `groups` 是用户自己管的（`noAutoGroups: true`）。
   直连模型 id 能路由，但要让 DSH 之类的 agent 用上，需要在 DSH 的 provider 配置（或 magpie 的组）里加一条。

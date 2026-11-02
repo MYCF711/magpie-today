@@ -694,10 +694,10 @@ Today did not stream: unexpected reply: {"id":"chatcmpl-…","object":"chat.comp
 重新加载的办法（不必重启整个 magpie）：
 
 ```bash
-magpie plugin add "D:\主工作区\magpie-today-plugin"   # 重新注册 = 重新 import
+magpie plugin add "<WORKSPACE>\magpie-today-plugin"   # 重新注册 = 重新 import
 ```
 
-`plugin off/on today` **不行** —— 它认的是插件包名（`D:\主工作区\magpie-today-plugin`），
+`plugin off/on today` **不行** —— 它认的是插件包名（`<WORKSPACE>\magpie-today-plugin`），
 不是 provider id（`today`），会报 `no plugin "today"`。
 
 ⚠ 这条对以后的验证很关键：**改完源码，必须 `plugin add` 一次再测网关**。
@@ -813,7 +813,7 @@ Windows 侧共 18 个连接器可用：`windows_desktop` / `_documents` / `_down
 
 | 任务 | 结果 | 耗时 |
 |---|---|---|
-| `dir D:\主工作区` | ✅ 返回真实目录列表（并自己处理了 GBK 乱码，用 UTF-8 重跑一次） | 16.1s |
+| `dir <WORKSPACE>` | ✅ 返回真实目录列表（并自己处理了 GBK 乱码，用 UTF-8 重跑一次） | 16.1s |
 | `echo hello_from_shell` | ✅ 原样回显 | 5.8s |
 | 写文件再读回 | ✅ 写入 `%USERPROFILE%\__probe_write.txt` 并读回 | 12.3s |
 
